@@ -1,0 +1,79 @@
+id: inc-013
+incident_report:
+  reported_at: 2026-03-11T05:00:00Z
+  reporter: customer success (enterprise customer escalation)
+  severity: SEV2
+  title: Contacts marked UNREACHABLE without their phones ever ringing
+  description: |
+    A customer says thousands of contacts in yesterday's outbound campaign were marked
+    UNREACHABLE, but the ones they spot-checked never received a call. Connect rate collapsed
+    from ~05:00 UTC. Is the carrier down, or are we exceeding our channel limit?
+environment:
+  window:
+    start: 2026-03-10T03:30:00Z
+    end: 2026-03-11T06:00:00Z
+  topology:
+    services:
+    - {name: campaign-scheduler, kind: scheduler, depends_on: [dialer, campaign-db], notes: "Dispatches due call attempts every 10s at a configured rate of 12 calls/sec"}
+    - {name: dialer, kind: worker, depends_on: [sip-gateway, campaign-db], notes: "Places outbound calls"}
+    - {name: sip-gateway, kind: sip_gateway, depends_on: [carrier-trunk]}
+    - {name: carrier-trunk, kind: external, notes: "Telecom carrier SIP trunk. Contract: 80 concurrent channels, 15 call attempts/sec"}
+    - {name: campaign-db, kind: postgres}
+  metrics:
+  - {service: dialer, name: sip_invite_rejection_ratio, unit: ratio, labels: {code: "429"}, start: 2026-03-10T04:00:00Z, step_seconds: 1800,
+     values: [0.01, 0.04, 0.15, 0.38, 0.59, 0.69, 0.71, 0.70, 0.72, 0.70, 0.71, 0.69, 0.70, 0.72, 0.71, 0.70, 0.71]}
+  - {service: dialer, name: sip_invites_per_min, unit: per_min, start: 2026-03-10T04:00:00Z, step_seconds: 1800,
+     values: [260, 480, 690, 820, 900, 960, 990, 985, 992, 988, 990, 986, 991, 989, 990, 987, 988]}
+  - {service: dialer, name: active_calls, unit: count, start: 2026-03-10T04:00:00Z, step_seconds: 1800,
+     values: [10, 19, 24, 23, 21, 20, 22, 21, 20, 22, 23, 21, 20, 22, 21, 20, 21]}
+  - {service: campaign-scheduler, name: contacts_marked_unreachable_total, unit: count, start: 2026-03-10T04:00:00Z, step_seconds: 1800,
+     values: [0, 0, 25, 240, 760, 1450, 2180, 2900, 3640, 4360, 5090, 5820, 6540, 7270, 7990, 8720, 9440]}
+  - {service: dialer, name: sip_invites_per_min, unit: per_min, labels: {resolution: 1m}, start: 2026-03-10T07:00:00Z, step_seconds: 60,
+     values: [1290, 720, 1285, 718, 1292, 721, 1288, 719, 1290, 722, 1286, 720, 1291, 718, 1289, 721, 1287, 720, 1292, 719, 1288, 722, 1290, 718, 1286, 721, 1289, 720, 1291, 719]}
+  - {service: dialer, name: sip_invite_rejection_ratio, unit: ratio, labels: {code: "429", resolution: 1m}, start: 2026-03-10T07:00:00Z, step_seconds: 60,
+     values: [0.82, 0.58, 0.81, 0.59, 0.82, 0.57, 0.83, 0.58, 0.82, 0.59, 0.81, 0.58, 0.82, 0.57, 0.83, 0.58, 0.82, 0.59, 0.81, 0.58, 0.82, 0.57, 0.83, 0.58, 0.82, 0.59, 0.81, 0.58, 0.82, 0.57]}
+  logs:
+  - {ts: 2026-03-10T04:00:02Z, service: campaign-scheduler, level: INFO, message: "campaign K-2214 started: 21,000 contacts due"}
+  - {ts: 2026-03-10T05:02:11Z, service: dialer, level: WARN, message: "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s"}
+  - {ts: 2026-03-10T05:04:11Z, service: dialer, level: WARN, message: "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s"}
+  - {ts: 2026-03-10T05:06:12Z, service: dialer, level: WARN, message: "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=3/4 -> retry in 120s"}
+  - {ts: 2026-03-10T05:08:12Z, service: dialer, level: WARN, message: "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=4/4"}
+  - {ts: 2026-03-10T05:08:12Z, service: campaign-scheduler, level: INFO, message: "contact CT-55102 exhausted 4/4 attempts -> UNREACHABLE"}
+  - {ts: 2026-03-10T07:00:00Z, service: campaign-scheduler, level: INFO, message: "tick: dispatched 213 (new=120, retries=93) active=22"}
+  - {ts: 2026-03-10T07:01:00Z, service: campaign-scheduler, level: INFO, message: "tick: dispatched 120 (new=120, retries=0) active=21"}
+  traces:
+  - trace_id: t-inc013-reject-1
+    start: 2026-03-10T07:00:00Z
+    duration_ms: 120
+    status: error
+    spans:
+    - {service: dialer, operation: placeCall, duration_ms: 120, status: error, attrs: {contact: CT-60311, attempt: 2}}
+    - {service: sip-gateway, operation: outbound INVITE, duration_ms: 110, status: error, attrs: {sip_status: 429}}
+    - {service: carrier-trunk, operation: INVITE, duration_ms: 95, status: error, attrs: {sip_status: "429 Too Many Requests"}}
+  changes:
+  - {ts: 2026-03-10T04:00:00Z, kind: scheduled_job, service: campaign-scheduler, summary: "Campaign K-2214 (21,000 contacts) start", author: customer}
+  runbooks:
+  - id: rb-sip-errors
+    title: Outbound SIP failures
+    body: "Carrier 429/503 count as a failed attempt; the attempt is retried after a fixed 120s. A contact is marked UNREACHABLE after 4 attempts."
+  external_reports:
+  - name: carrier_cdr_summary_2026-03-10
+    kind: carrier_cdr
+    generated_at: 2026-03-11T03:00:00Z
+    body: |
+      Trunk summary 2026-03-10 (UTC):
+      contracted concurrent channels: 80
+      peak concurrent channels: 24
+      INVITE attempts rejected (429): 71%
+  - name: carrier_support_reply
+    kind: vendor_email
+    generated_at: 2026-03-11T04:30:00Z
+    body: "Your trunk exceeded its call-attempt rate (15 attempts/second, all INVITEs counted) for most of 10 March from ~05:00 UTC; excess INVITEs were rejected with 429. Please reduce your attempt rate."
+  past_incidents:
+  - {id: PIR-2026-004, date: 2026-01-22T00:00:00Z, title: "Outbound calls failing - carrier outage", summary: "All INVITEs failed with 503 for 40 minutes.", root_cause: "Carrier-side SBC failure.", resolution: "Resolved by carrier; no action on our side."}
+tool_faults:
+- tool: search_logs
+  match: {service: dialer}
+  mode: truncated
+  keep_first_n: 2
+  note: Log backend caps results without saying so; the agent sees only the first rejections, not the UNREACHABLE outcome.

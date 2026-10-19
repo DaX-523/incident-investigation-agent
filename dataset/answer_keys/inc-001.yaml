@@ -1,0 +1,69 @@
+id: inc-001
+metadata:
+  id: inc-001
+  title: Checkout deploy breaks legacy carts (control case)
+  primary_tag: control
+  tags: [control]
+  difficulty: L1
+  provenance: synthetic
+  inspired_by: Common bad-deploy postmortem pattern (unguarded field access on old data shapes)
+ground_truth:
+  root_cause:
+    statement: checkout-svc v2.14.0 reads cart.currency.code, which is undefined for legacy v1-schema carts (~22% of carts), throwing in formatPrice.
+    fault_type: code_defect_after_deploy
+    entity: checkout-svc v2.14.0 (src/pricing/format.ts:41)
+    aliases: [checkout-svc v2.14.0 deploy, 'PR #1182 multi-currency formatting', legacy v1 carts missing currency]
+  contributing_factors:
+  - statement: v1->v2 cart schema migration (CART-212) still incomplete, so old data shapes remain in production.
+    must_mention: true
+  - statement: No canary/error-rate gate; rollout reached 100% in 3 minutes.
+  propagation_chain: ['checkout-svc v2.14.0 deployed 14:01-14:04', formatPrice throws for cart_schema=v1, ~22% of checkouts return 5xx]
+  red_herrings:
+  - claim: The catalog-svc deploy caused the failures.
+    why_wrong: It deployed at 11:20, almost 3 hours before onset, and failing traces never touch catalog-svc.
+    disproved_by: [ev_changes, ev_traces]
+  - claim: Payment provider/payments-svc failure.
+    why_wrong: payments-svc 5xx is flat at 0.1% and failing traces end inside checkout-svc before any payment call.
+    disproved_by: [ev_payments_metrics, ev_traces]
+  key_evidence:
+  - id: ev_changes
+    tool: get_changes
+    description: checkout-svc v2.14.0 deploy at 14:01 aligns with onset at 14:05
+  - id: ev_error_metric
+    tool: query_metrics
+    args:
+      service: checkout-svc
+    description: 5xx jumps from 0.3% to ~22% at 14:05
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: checkout-svc
+    description: TypeError in formatPrice only for cart_schema=v1
+  - id: ev_traces
+    tool: get_traces
+    description: failing traces end in checkout-svc pricing.formatPrice
+  - id: ev_payments_metrics
+    tool: query_metrics
+    args:
+      service: payments-svc
+    description: payments healthy
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Roll back checkout-svc to v2.13.2.
+    rationale: Restores service immediately; stateless rollback per rb-rollback.
+  - rank: 2
+    category: fix
+    action: Guard formatPrice against missing currency (fall back to default currency) and re-release.
+    rationale: Removes the crash for v1 carts.
+  - rank: 3
+    category: prevent
+    action: Finish CART-212 migration/backfill currency on v1 carts; add contract tests with v1 cart fixtures.
+    rationale: Eliminates the legacy data shape that tests did not cover.
+  - rank: 4
+    category: detect
+    action: Add canary stage with automatic rollback on error-rate regression.
+    rationale: Would have limited blast radius to the canary.
+  must_not: [Conclude without checking change history and checkout-svc errors.]

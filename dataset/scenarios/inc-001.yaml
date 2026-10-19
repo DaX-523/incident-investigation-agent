@@ -1,0 +1,181 @@
+id: inc-001
+incident_report:
+  reported_at: 2026-09-14 14:20:00+00:00
+  reporter: on-call SRE (PagerDuty)
+  severity: SEV2
+  title: Checkout failures ~20% since shortly after 14:00 UTC
+  description: |
+    CheckoutErrorRateHigh paged at 14:08. Roughly one in five checkouts shows
+    "Something went wrong". No customer pattern identified yet. Please investigate
+    root cause and recommend actions.
+environment:
+  window:
+    start: 2026-09-14 13:30:00+00:00
+    end: 2026-09-14 15:00:00+00:00
+  topology:
+    services:
+    - name: web-frontend
+      kind: web
+      depends_on: [api-gateway]
+    - name: api-gateway
+      kind: gateway
+      depends_on: [checkout-svc, catalog-svc]
+    - name: checkout-svc
+      kind: service
+      depends_on: [payments-svc, orders-db]
+    - name: catalog-svc
+      kind: service
+      depends_on: [catalog-db]
+    - name: payments-svc
+      kind: service
+      depends_on: [psp-gateway]
+    - name: psp-gateway
+      kind: external
+      notes: third-party payment provider
+    - name: orders-db
+      kind: postgres
+    - name: catalog-db
+      kind: postgres
+  metrics:
+  - service: checkout-svc
+    name: http_5xx_rate
+    unit: percent
+    start: 2026-09-14 13:30:00+00:00
+    step_seconds: 300
+    values: [0.2, 0.3, 0.2, 0.2, 0.3, 0.2, 0.3, 18.5, 21.2, 22.0, 21.7, 22.4, 21.9, 22.1, 21.5, 22.3, 22.0, 21.8]
+  - service: checkout-svc
+    name: latency_p99
+    unit: ms
+    start: 2026-09-14 13:30:00+00:00
+    step_seconds: 300
+    values: [410, 420, 415, 405, 430, 425, 418, 402, 398, 401, 396, 404, 399, 400, 397, 403, 401, 398]
+  - service: payments-svc
+    name: http_5xx_rate
+    unit: percent
+    start: 2026-09-14 13:30:00+00:00
+    step_seconds: 300
+    values: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  - service: orders-db
+    name: cpu_utilization
+    unit: percent
+    start: 2026-09-14 13:30:00+00:00
+    step_seconds: 300
+    values: [34, 35, 36, 34, 35, 36, 35, 31, 30, 31, 30, 29, 30, 31, 30, 29, 30, 30]
+  logs:
+  - ts: 2026-09-14 14:01:12+00:00
+    service: checkout-svc
+    level: INFO
+    message: Starting checkout-svc v2.14.0 (pod checkout-svc-6b8d-1)
+  - ts: 2026-09-14 14:04:51+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'TypeError: Cannot read properties of undefined (reading ''code'') at formatPrice (src/pricing/format.ts:41)'
+    attrs:
+      cart_id: c_88213
+      cart_schema: v1
+      version: v2.14.0
+  - ts: 2026-09-14 14:05:03+00:00
+    service: checkout-svc
+    level: INFO
+    message: POST /checkout 200 in 212ms
+    attrs:
+      cart_schema: v2
+      version: v2.14.0
+  - ts: 2026-09-14 14:05:40+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'TypeError: Cannot read properties of undefined (reading ''code'') at formatPrice (src/pricing/format.ts:41)'
+    attrs:
+      cart_id: c_90117
+      cart_schema: v1
+      version: v2.14.0
+  - ts: 2026-09-14 14:06:18+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'TypeError: Cannot read properties of undefined (reading ''code'') at formatPrice (src/pricing/format.ts:41)'
+    attrs:
+      cart_id: c_71102
+      cart_schema: v1
+      version: v2.14.0
+  - ts: 2026-09-14 14:07:02+00:00
+    service: payments-svc
+    level: INFO
+    message: authorize ok psp_latency_ms=180
+  - ts: 2026-09-14 14:11:30+00:00
+    service: checkout-svc
+    level: WARN
+    message: 'cart_schema=v1 carts: 22.4% of active carts (migration to v2 pending, ticket CART-212)'
+  - ts: 2026-09-14 14:15:44+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'TypeError: Cannot read properties of undefined (reading ''code'') at formatPrice (src/pricing/format.ts:41)'
+    attrs:
+      cart_id: c_66310
+      cart_schema: v1
+      version: v2.14.0
+  traces:
+  - trace_id: t-c01-fail-1
+    start: 2026-09-14 14:05:40+00:00
+    duration_ms: 14
+    status: error
+    spans:
+    - service: api-gateway
+      operation: POST /checkout
+      duration_ms: 14
+      status: error
+    - service: checkout-svc
+      operation: pricing.formatPrice
+      duration_ms: 2
+      status: error
+      attrs:
+        cart_schema: v1
+  - trace_id: t-c01-ok-1
+    start: 2026-09-14 14:05:03+00:00
+    duration_ms: 212
+    status: ok
+    spans:
+    - service: api-gateway
+      operation: POST /checkout
+      duration_ms: 212
+      status: ok
+    - service: checkout-svc
+      operation: pricing.formatPrice
+      duration_ms: 1
+      status: ok
+      attrs:
+        cart_schema: v2
+    - service: payments-svc
+      operation: authorize
+      duration_ms: 185
+      status: ok
+  changes:
+  - ts: 2026-09-14 11:20:00+00:00
+    kind: deploy
+    service: catalog-svc
+    summary: catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak)
+    author: catalog-team
+  - ts: 2026-09-14 14:01:00+00:00
+    kind: deploy
+    service: checkout-svc
+    summary: checkout-svc v2.13.2 -> v2.14.0 (multi-currency price formatting, PR
+    author: checkout-team
+    details: formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04.
+  alerts:
+  - ts: 2026-09-14 14:08:00+00:00
+    name: CheckoutErrorRateHigh
+    severity: critical
+    entity: checkout-svc
+    state: firing
+    summary: 5xx rate 21.2% > 2% for 3m
+  runbooks:
+  - id: rb-rollback
+    title: Service rollback
+    body: Use `deployctl rollback <service> --to <version>`. Rollback is safe for stateless services; verify error rate within 5 minutes.
+  past_incidents:
+  - id: PIR-2026-031
+    date: '2026-05-12T00:00:00Z'
+    title: Checkout 5xx after checkout-svc v2.9.0
+    summary: Checkout errors for 25 minutes after a deploy; null field access on promo codes.
+    root_cause: Unguarded access to cart.promo in v2.9.0.
+    resolution: Rolled back; added null checks.
+tool_faults: []

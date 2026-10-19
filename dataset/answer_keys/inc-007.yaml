@@ -1,0 +1,76 @@
+id: inc-007
+metadata:
+  id: inc-007
+  title: Health checks green while card payments fail on a revoked provider key
+  primary_tag: conflicting_observability
+  tags: [conflicting_observability, misleading_evidence]
+  difficulty: L3
+  provenance: synthetic
+  inspired_by: Secret-rotation outages where long-running processes keep a revoked credential
+ground_truth:
+  root_cause:
+    statement: The 06:58 key rotation revoked the old PSP API key immediately (new revoke_previous_immediately=true), but payments-svc only reads the key at startup, so running pods kept using the revoked key and every card authorization returned 401. The service mapped those 401s to a user-facing "could not be verified" error (HTTP 402) instead of a server error.
+    fault_type: credential_rotation_without_reload
+    entity: payments-svc PSP credential (key pk_live_..A7) / rotate-psp-keys job
+    aliases: [revoked PSP API key, secret rotation without reload, invalid_api_key 401]
+  contributing_factors:
+  - statement: Provider 401s are mapped to a 4xx client error, so 5xx dashboards and alerts stay green.
+    must_mention: true
+  - statement: /healthz checks only process and DB, not provider authentication.
+    must_mention: true
+  - statement: The synthetic card-journey alert fired at 07:04 but was routed to email as a warning.
+  - statement: The 05-25 change to revoke immediately removed the grace period that had hidden the reload gap.
+  propagation_chain: [05-25 rotation config switched to immediate revoke, '06:58 rotation; 07:00:30 old key revoked', running pods send revoked key -> 401, 401 mapped to PAYMENT_METHOD_UNVERIFIED (402), 'card payments 0% success; partial recovery to 25% when a new pod starts at 09:08']
+  red_herrings:
+  - claim: The web-frontend v8.2.0 card form release broke payments.
+    why_wrong: Failures start at 07:00, matching revocation, and are 401s from the PSP; the new pod (same frontend) succeeds.
+    disproved_by: [ev_logs, ev_changes]
+  - claim: The payment provider is down.
+    why_wrong: PSP status is operational and a pod with the new key authorizes successfully.
+    disproved_by: [ev_psp_status, ev_logs]
+  - claim: Nothing is wrong server-side because health checks and 5xx are green.
+    why_wrong: Card success rate is 0% and 4xx jumped to ~32%.
+    disproved_by: [ev_success_metrics]
+  key_evidence:
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: payments-svc
+    description: 401 invalid_api_key with old key id; new pod loaded new key and succeeds
+  - id: ev_changes
+    tool: get_changes
+    description: rotation at 06:58 with immediate revoke; revoke config changed 05-25
+  - id: ev_success_metrics
+    tool: query_metrics
+    args:
+      service: payments-svc
+    description: card success 0% then 25% after scale-up; 5xx flat
+  - id: ev_psp_status
+    tool: get_external_report
+    args:
+      name: psp_status_page
+    description: provider operational
+    required: false
+  - id: ev_hpa
+    tool: get_infra_events
+    description: HPA added a 4th pod at 09:08, explaining partial recovery
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Rolling-restart payments-svc so all pods load the new key.
+    rationale: Every pod started after 07:00 works.
+  - rank: 2
+    category: fix
+    action: Make payments-svc reload credentials on rotation (watch Vault lease / SIGHUP) and give rotation an overlap window before revoking the old key.
+    rationale: Removes the reload gap.
+  - rank: 3
+    category: detect
+    action: Treat PSP 401/403 as server-side errors (5xx + alert) and add a provider-auth check to deep health.
+    rationale: Credential failures are our fault, not the user's.
+  - rank: 4
+    category: detect
+    action: Page on synthetic card-journey failures instead of emailing.
+    rationale: The synthetic check caught it at 07:04.
+  must_not: [Blame the web-frontend v8.2.0 release., Recommend waiting for the payment provider to recover.]

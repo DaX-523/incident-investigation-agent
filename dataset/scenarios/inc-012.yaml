@@ -1,0 +1,96 @@
+id: inc-012
+incident_report:
+  reported_at: 2026-05-06T03:00:00Z
+  reporter: AWS Cost Anomaly Detection (email alert)
+  severity: SEV3
+  title: "Cost anomaly: Amazon EC2 - Compute, ap-south-1, usage type APS3-DataTransfer-Out-Bytes"
+  description: |
+    AWS Cost Anomaly Detection reports higher than expected spending.
+    Anomaly start 2026-04-29, last detected 2026-05-05, duration 7 days.
+    Max daily impact $74.80, total impact $205.53.
+    Root cause per AWS: service Amazon EC2 - Compute, region ap-south-1,
+    usage type APS3-DataTransfer-Out-Bytes (impact contribution $211.51).
+    Only the frontend/blog EC2 host serves internet traffic in that region. Find out what
+    is driving the egress and what to fix first.
+environment:
+  window:
+    start: 2026-04-22T00:00:00Z
+    end: 2026-05-06T06:00:00Z
+  topology:
+    services:
+    - {name: nginx-edge, kind: reverse_proxy, depends_on: [web-app, blog, backend-api], notes: "Single EC2 host in ap-south-1 running nginx in Docker; TLS terminated here; no CDN in front"}
+    - {name: web-app, kind: web, depends_on: [media-cdn], notes: "Single-page web app served as static files by nginx"}
+    - {name: blog, kind: web, depends_on: [media-cdn], notes: "Marketing/blog site"}
+    - {name: backend-api, kind: service}
+    - {name: media-cdn, kind: external, notes: "Third-party media CDN (not billed on AWS)"}
+    - {name: web-analytics, kind: analytics, notes: "JavaScript-based web analytics"}
+  metrics:
+  - {service: nginx-edge, name: requests_per_day, unit: requests, start: 2026-04-22T00:00:00Z, step_seconds: 86400,
+     values: [44000, 46000, 43000, 47000, 45000, 46000, 44000, 80000, 160000, 330000, 520000, 890000, 480000, 190000]}
+  - {service: nginx-edge, name: egress_gb_per_day, unit: GB, start: 2026-04-22T00:00:00Z, step_seconds: 86400,
+     values: [36, 35, 37, 38, 36, 37, 36, 64, 127, 262, 415, 721, 388, 160]}
+  - {service: nginx-edge, name: cpu_utilization_avg, unit: percent, start: 2026-04-22T00:00:00Z, step_seconds: 86400,
+     values: [18, 19, 18, 20, 19, 18, 19, 24, 30, 41, 55, 78, 52, 29]}
+  - {service: nginx-edge, name: http_404_share, unit: percent, start: 2026-04-22T00:00:00Z, step_seconds: 86400,
+     values: [0.4, 0.5, 0.4, 0.5, 0.4, 0.4, 0.5, 0.3, 0.2, 0.1, 0.1, 0.1, 0.1, 0.2]}
+  - {service: web-analytics, name: unique_visitors_per_day, unit: users, start: 2026-04-22T00:00:00Z, step_seconds: 86400,
+     values: [1850, 1920, 1790, 1880, 1900, 1870, 1910, 1940, 1870, 1960, 1910, 1890, 1930, 1900]}
+  - {service: backend-api, name: requests_per_day, unit: requests, start: 2026-04-22T00:00:00Z, step_seconds: 86400,
+     values: [61000, 63000, 60000, 64000, 62000, 61500, 62800, 63500, 62500, 64000, 63000, 62800, 63200, 62900]}
+  logs:
+  - {ts: 2026-05-03T03:14:07Z, service: nginx-edge, level: INFO, message: "GET /app/projects/x9/settings/a/b HTTP/1.1 200 3121 ua=\"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; GPTBot/1.2; +https://openai.com/gptbot)\""}
+  - {ts: 2026-05-03T03:14:09Z, service: nginx-edge, level: INFO, message: "GET /static/js/app-3f9c.js HTTP/1.1 200 4718233 ua=\"Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com)\""}
+  - {ts: 2026-05-03T03:14:12Z, service: nginx-edge, level: INFO, message: "GET /blog/getting-started-guide HTTP/1.1 200 88412 ua=\"Mozilla/5.0 (compatible; ClaudeBot/1.0; +claudebot@anthropic.com)\""}
+  - {ts: 2026-05-03T03:14:15Z, service: nginx-edge, level: INFO, message: "GET /features/editor/fr/fr/fr/fr HTTP/1.1 200 3121 ua=\"meta-externalagent/1.1 (+https://developers.facebook.com/docs/sharing/webmasters/crawler)\""}
+  - {ts: 2026-05-03T03:14:20Z, service: nginx-edge, level: INFO, message: "GET /robots.txt HTTP/1.1 200 142 ua=\"Mozilla/5.0 (compatible; Bytespider; spider-feedback@bytedance.com)\""}
+  - {ts: 2026-05-03T09:41:02Z, service: nginx-edge, level: INFO, message: "GET / HTTP/1.1 200 3121 ua=\"Mozilla/5.0 (iPhone; CPU iPhone OS 18_4 like Mac OS X) Safari/604.1\""}
+  - {ts: 2026-05-03T09:41:05Z, service: nginx-edge, level: INFO, message: "GET /this-page-does-not-exist HTTP/1.1 200 3121 ua=\"curl/8.5.0\""}
+  changes:
+  - {ts: 2026-02-25T14:26:00Z, kind: deploy, service: web-app, summary: "SEO improvements: page metadata and sitemap", author: frontend}
+  - {ts: 2026-04-17T10:00:00Z, kind: deploy, service: web-app, summary: "Minor UI fixes", author: frontend}
+  external_reports:
+  - name: robots_txt_snapshot
+    kind: config_snapshot
+    generated_at: 2026-05-06T00:00:00Z
+    body: |
+      https://www.example-video-saas.com/robots.txt
+      User-agent: *
+      Allow: /
+      Sitemap: https://www.example-video-saas.com/sitemap.xml
+  - name: nginx_site_config_excerpt
+    kind: config_snapshot
+    generated_at: 2026-05-06T00:00:00Z
+    body: |
+      location / { try_files $uri $uri/ /index.html; }
+      location ~* \.(js|css|png|jpg|svg|woff2)$ { expires 1y; add_header Cache-Control "public, immutable"; }
+      # no limit_req zones configured
+  - name: aws_cost_explorer_daily
+    kind: billing
+    generated_at: 2026-05-06T00:00:00Z
+    body: |
+      Amazon EC2 - Compute, ap-south-1, usage type APS3-DataTransfer-Out-Bytes
+      Daily cost above expected baseline (USD):
+      2026-04-29  3.10
+      2026-04-30  9.85
+      2026-05-01  24.60
+      2026-05-02  41.27
+      2026-05-03  74.80
+      2026-05-04  38.41
+      2026-05-05  13.50
+      Total impact: 205.53
+  - name: nginx_access_top_talkers
+    kind: log_analysis
+    generated_at: 2026-05-04T00:00:00Z
+    body: |
+      2026-05-03 nginx access log summary:
+      by user agent (requests): GPTBot 31%, Bytespider 22%, ClaudeBot 12%, meta-externalagent 9%,
+        Amazonbot 6%, PerplexityBot 4%, Googlebot 2%, browsers 11%, other 3%
+      by bytes: /static/js bundles 52%, blog HTML and assets 31%, other 17%
+      distinct paths requested by crawlers: 1.9M (most do not exist and are served as 200 index.html)
+      source networks: mostly cloud providers matching published crawler IP ranges; user agents self-identify
+  - name: web_analytics_summary
+    kind: analytics
+    generated_at: 2026-05-06T00:00:00Z
+    body: "Unique visitors and pageviews flat week-over-week (+1.3%). No new referrers. Signups flat."
+  past_incidents: []
+tool_faults: []

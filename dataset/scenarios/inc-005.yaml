@@ -1,0 +1,162 @@
+id: inc-005
+incident_report:
+  reported_at: 2026-07-09 11:05:00+00:00
+  reporter: customer success manager
+  severity: SEV3
+  title: Intermittent checkout failures, but dashboards are all green
+  description: |
+    Several merchants report shoppers occasionally getting "Item availability could not be
+    confirmed" at checkout, sometimes several times in a row. Our main dashboard shows error
+    rate ~1% and normal average latency. Is this real or user-side?
+environment:
+  window:
+    start: 2026-07-09 10:00:00+00:00
+    end: 2026-07-09 11:30:00+00:00
+  topology:
+    services:
+    - name: checkout-svc
+      kind: service
+      depends_on: [inventory-svc]
+    - name: inventory-svc
+      kind: service
+      notes: '18 pods across eu-west-1a/b/c; each pod keeps a local RocksDB stock cache on the node''s EBS volume. Readiness probe: GET /ping'
+    - name: node-ip-10-0-3-17
+      kind: k8s_node
+      notes: eu-west-1c; hosts inventory-svc pods xk2, p9t, m4c
+  metrics:
+  - service: checkout-svc
+    name: error_rate
+    unit: percent
+    labels:
+      scope: global
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [0.3, 0.3, 0.3, 0.4, 1.1, 1.2, 1.3, 1.2, 1.1, 1.2, 1.3, 1.2, 1.2, 1.1, 1.2, 1.3, 1.2, 1.2]
+  - service: inventory-svc
+    name: latency_avg
+    unit: ms
+    labels:
+      scope: global
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [180, 182, 179, 185, 228, 231, 229, 233, 230, 228, 232, 231, 229, 230, 233, 231, 230, 229]
+  - service: inventory-svc
+    name: latency_p99
+    unit: ms
+    labels:
+      az: eu-west-1a
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [410, 405, 412, 408, 411, 409, 406, 410, 412, 407, 409, 411, 408, 410, 406, 409, 411, 410]
+  - service: inventory-svc
+    name: latency_p99
+    unit: ms
+    labels:
+      az: eu-west-1b
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [402, 409, 404, 406, 403, 407, 405, 402, 408, 404, 406, 403, 405, 407, 404, 406, 405, 403]
+  - service: inventory-svc
+    name: latency_p99
+    unit: ms
+    labels:
+      az: eu-west-1c
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [415, 412, 418, 640, 3900, 4100, 4050, 4120, 4080, 4100, 4090, 4110, 4070, 4100, 4120, 4090, 4100, 4080]
+  - service: inventory-svc
+    name: latency_p99
+    unit: ms
+    labels:
+      node: ip-10-0-3-17
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [420, 418, 421, 900, 4600, 4700, 4650, 4720, 4680, 4700, 4690, 4710, 4670, 4700, 4720, 4690, 4700, 4680]
+  - service: node-ip-10-0-3-17
+    name: disk_io_await
+    unit: ms
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [1.8, 1.9, 2.0, 35, 180, 195, 188, 201, 190, 185, 192, 198, 187, 190, 195, 189, 191, 188]
+  - service: inventory-svc
+    name: readiness_probe_success
+    unit: percent
+    start: 2026-07-09 10:00:00+00:00
+    step_seconds: 300
+    values: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  logs:
+  - ts: 2026-07-09 10:22:10+00:00
+    service: checkout-svc
+    level: WARN
+    message: inventory reserve timed out after 3000ms; returning AVAILABILITY_UNCONFIRMED
+    attrs:
+      upstream_pod: inventory-svc-5d8-xk2
+  - ts: 2026-07-09 10:31:44+00:00
+    service: checkout-svc
+    level: WARN
+    message: inventory reserve timed out after 3000ms; returning AVAILABILITY_UNCONFIRMED
+    attrs:
+      upstream_pod: inventory-svc-5d8-p9t
+  - ts: 2026-07-09 10:40:02+00:00
+    service: inventory-svc
+    level: WARN
+    message: rocksdb get stock:SKU-44120 took 3820ms (slow read)
+    attrs:
+      pod: inventory-svc-5d8-m4c
+      node: ip-10-0-3-17
+  - ts: 2026-07-09 10:52:19+00:00
+    service: checkout-svc
+    level: WARN
+    message: inventory reserve timed out after 3000ms; returning AVAILABILITY_UNCONFIRMED
+    attrs:
+      upstream_pod: inventory-svc-5d8-xk2
+  traces:
+  - trace_id: t-c05-slow-1
+    start: 2026-07-09 10:40:00+00:00
+    duration_ms: 3010
+    status: error
+    spans:
+    - service: checkout-svc
+      operation: reserveInventory
+      duration_ms: 3010
+      status: error
+      attrs:
+        error: timeout
+    - service: inventory-svc
+      operation: rocksdb.get
+      duration_ms: 3820
+      status: ok
+      attrs:
+        pod: inventory-svc-5d8-m4c
+        node: ip-10-0-3-17
+  - trace_id: t-c05-ok-1
+    start: 2026-07-09 10:40:05+00:00
+    duration_ms: 160
+    status: ok
+    spans:
+    - service: checkout-svc
+      operation: reserveInventory
+      duration_ms: 160
+      status: ok
+    - service: inventory-svc
+      operation: rocksdb.get
+      duration_ms: 3
+      status: ok
+      attrs:
+        pod: inventory-svc-5d8-r7w
+        node: ip-10-0-1-22
+  changes: []
+  external_reports:
+  - name: aws_health_dashboard
+    kind: cloud_provider_health
+    generated_at: 2026-07-09 10:30:00+00:00
+    body: 'Account-specific event (10:12 UTC): Degraded performance of EBS volume vol-0ab3f9c1 (eu-west-1c), attached to instance i-0c3e81 (ip-10-0-3-17). We recommend replacing the volume or moving workloads.'
+  alerts: []
+  past_incidents:
+  - id: PIR-2026-027
+    date: '2026-05-02T00:00:00Z'
+    title: Intermittent checkout failures (user-side)
+    summary: Reports of failing checkouts; metrics normal.
+    root_cause: Browser extension blocking a payment script for some users.
+    resolution: No server-side action; FAQ updated.
+tool_faults: []

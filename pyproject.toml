@@ -1,0 +1,12 @@
+[project]
+name = "incident-investigator"
+version = "0.1.0"
+description = "LangGraph agent for incident root cause analysis"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.8",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3"]

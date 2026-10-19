@@ -1,0 +1,136 @@
+id: inc-006
+incident_report:
+  reported_at: 2026-06-18 10:15:00+00:00
+  reporter: payments engineer
+  severity: SEV2
+  title: Payments retry storm knocked over fraud-svc?
+  description: |
+    Burst of payment failures at ~10:02. payments-svc logged fraud-check errors at 10:02 and
+    fraud-svc logs show it crashed/restarted at ~10:05, so it looks like our retries hammered
+    fraud-svc and took it down. Can you confirm and recommend retry limits?
+environment:
+  window:
+    start: 2026-06-18 09:20:00+00:00
+    end: 2026-06-18 10:30:00+00:00
+  topology:
+    services:
+    - name: payments-svc
+      kind: service
+      depends_on: [fraud-svc]
+    - name: fraud-svc
+      kind: service
+      notes: Single deployment, memory limit 2048Mi; runs on node ip-10-0-1-44. Hot-reloads ML model on schedule.
+    - name: node-ip-10-0-1-44
+      kind: k8s_node
+  metrics:
+  - service: fraud-svc
+    name: container_memory_working_set
+    unit: MiB
+    start: 2026-06-18 09:20:00+00:00
+    step_seconds: 300
+    values: [1150, 1160, 1600, 1690, 1760, 1830, 1890, 1950, 2010, 640, 1590, 1700, 1790, 1880]
+  - service: fraud-svc
+    name: requests_per_sec
+    unit: rps
+    start: 2026-06-18 09:20:00+00:00
+    step_seconds: 300
+    values: [310, 305, 312, 308, 311, 309, 306, 310, 312, 520, 315, 309, 311, 308]
+  - service: payments-svc
+    name: fraud_check_errors
+    unit: per_min
+    start: 2026-06-18 09:20:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 412, 0, 0, 0, 0]
+  - service: node-ip-10-0-1-44
+    name: node_timex_offset_seconds
+    unit: s
+    start: 2026-06-18 09:20:00+00:00
+    step_seconds: 300
+    values: [181.2, 181.3, 181.4, 181.5, 181.6, 181.7, 181.8, 181.9, 182.0, 182.0, 182.1, 182.2, 182.3, 182.4]
+  logs:
+  - ts: 2026-06-18 09:33:01+00:00
+    service: fraud-svc
+    level: INFO
+    message: 'scheduled reload: loading model fraud-gbm v7 (1.9GB on disk)'
+    attrs:
+      host: ip-10-0-1-44
+  - ts: 2026-06-18 10:04:49+00:00
+    service: fraud-svc
+    level: WARN
+    message: 'GC overhead high: heap 1.98GiB / limit 2.0GiB'
+    attrs:
+      host: ip-10-0-1-44
+  - ts: 2026-06-18 10:05:13+00:00
+    service: fraud-svc
+    level: INFO
+    message: starting fraud-svc (previous container exit code 137)
+    attrs:
+      host: ip-10-0-1-44
+  - ts: 2026-06-18 10:05:30+00:00
+    service: fraud-svc
+    level: WARN
+    message: inbound request rate 1.7x baseline (client retries)
+    attrs:
+      host: ip-10-0-1-44
+  - ts: 2026-06-18 10:02:09+00:00
+    service: payments-svc
+    level: ERROR
+    message: 'fraud check failed: upstream connect error or disconnect/reset before headers. reset reason: connection termination'
+  - ts: 2026-06-18 10:02:10+00:00
+    service: payments-svc
+    level: WARN
+    message: retrying fraud check (attempt 2/3)
+  - ts: 2026-06-18 10:02:45+00:00
+    service: payments-svc
+    level: INFO
+    message: fraud check recovered
+  traces:
+  - trace_id: t-c06-fail-1
+    start: 2026-06-18 10:02:09+00:00
+    duration_ms: 2
+    status: error
+    spans:
+    - service: payments-svc
+      operation: fraudCheck
+      duration_ms: 2
+      status: error
+      attrs:
+        error: connection reset
+  changes:
+  - ts: 2026-06-18 09:30:00+00:00
+    kind: scheduled_job
+    service: fraud-svc
+    summary: 'Model hot-reload: fraud-gbm v6 -> v7'
+    author: ml-platform
+    details: 'v7 adds 340 features; serialized size 1.9GB (v6: 0.8GB).'
+  infra_events:
+  - ts: 2026-06-16 22:10:00+00:00
+    source: chronyd
+    entity: node/ip-10-0-1-44
+    reason: NoSelectableSources
+    message: 'chronyd: no selectable sources; system clock unsynchronised'
+  - ts: 2026-06-18 10:02:08+00:00
+    source: kubernetes
+    entity: pod/fraud-svc-6f7-abc
+    reason: OOMKilled
+    message: Container fraud exceeded memory limit (2048Mi) and was killed
+  - ts: 2026-06-18 10:02:11+00:00
+    source: kubernetes
+    entity: pod/fraud-svc-6f7-abc
+    reason: Started
+    message: Started container fraud
+  alerts:
+  - ts: 2026-06-18 10:03:00+00:00
+    name: PaymentsFraudCheckErrors
+    severity: critical
+    entity: payments-svc
+    state: firing
+    summary: fraud check errors > 50/min
+  past_incidents:
+  - id: PIR-2026-006
+    date: '2026-02-09T00:00:00Z'
+    title: Payments retry storm overloaded fraud-svc
+    summary: A slow fraud-svc release caused payments-svc to retry 5x per request, overloading fraud-svc.
+    root_cause: Unbounded retries in payments-svc.
+    resolution: Capped retries at 3.
+tool_faults: []

@@ -1,0 +1,55 @@
+id: inc-013
+metadata:
+  id: inc-013
+  title: Carrier attempt-rate 429s sustained by lockstep fixed-interval retries
+  primary_tag: conflicting_observability
+  tags: [conflicting_observability, misleading_evidence]
+  difficulty: L4
+  provenance: synthetic
+  inspired_by: Generic retry-storm / metastable failure pattern against an upstream rate limit (fictional organisation, carrier and figures)
+ground_truth:
+  root_cause:
+    statement: The carrier limits call attempts to 15/sec and counts rejected INVITEs. New dispatch alone (12/sec) fits, but every 429 is retried after a fixed 120s, so retries arrive in synchronized waves (~21/sec on wave minutes). Those waves push the attempt rate over the limit, which creates more rejections and bigger waves - a self-sustaining retry loop. Each rejection also consumes one of the contact's 4 attempts, so contacts are marked UNREACHABLE without ever ringing.
+    fault_type: retry_feedback_loop_on_rate_limit
+    entity: dialer/campaign-scheduler retry policy for carrier 429s
+    aliases: ["429 retry storm", "lockstep fixed-interval retries", "no backpressure on carrier rate limiting", "retries exceeding carrier attempt rate"]
+  contributing_factors:
+    - statement: Rate-limit rejections consume contact attempts, converting a transient carrier condition into permanent contact loss.
+      must_mention: true
+    - statement: No backoff/jitter or circuit breaker; dispatch continues at full rate while most attempts are rejected.
+      must_mention: true
+    - statement: The configured 12 calls/sec ignores retries, so total attempt rate is not bounded by the carrier limit.
+  propagation_chain:
+    - campaign dispatch ramps to 12 new attempts/sec
+    - early 429s retried at a fixed 120s -> synchronized waves
+    - waves exceed 15 attempts/sec -> more 429s -> bigger waves
+    - ~71% of INVITEs rejected for hours
+    - contacts burn 4/4 attempts -> UNREACHABLE without ringing
+  red_herrings:
+    - claim: We exceeded the 80-channel concurrency limit.
+      why_wrong: Active calls never exceed ~24, matching the carrier CDR peak of 24/80; the limit being hit is the attempt rate, not channels.
+      disproved_by: [ev_active_calls, ev_cdr]
+    - claim: Carrier outage - nothing for us to fix.
+      why_wrong: Some calls connect, the carrier explicitly cites the attempt-rate limit, and rejection tracks our own retry waves (82% on wave minutes vs 58% otherwise).
+      disproved_by: [ev_waves, ev_support]
+    - claim: Our dispatch rate (12/sec) is under the limit, so it cannot be us.
+      why_wrong: Retries are added on top of new dispatch; the 1-minute series shows ~1290 attempts/min (21.5/sec) on wave minutes.
+      disproved_by: [ev_waves, ev_logs]
+  key_evidence:
+    - {id: ev_logs, tool: search_logs, args: {service: dialer}, description: "429 -> fixed 120s retry; attempts 1..4 burned; UNREACHABLE"}
+    - {id: ev_active_calls, tool: query_metrics, args: {service: dialer, name: active_calls}, description: "concurrency ~20-24, far below 80"}
+    - {id: ev_cdr, tool: get_external_report, args: {name: carrier_cdr_summary_2026-03-10}, description: "CDR peak 24 of 80 channels"}
+    - {id: ev_support, tool: get_external_report, args: {name: carrier_support_reply}, description: "carrier cites the 15 attempts/sec limit", required: false}
+    - {id: ev_waves, tool: query_metrics, args: {service: dialer, name: sip_invites_per_min}, description: "1-minute series shows 2-minute retry waves above 900/min"}
+    - {id: ev_runbook, tool: search_runbooks, description: "documents the fixed-120s / 4-attempt policy", required: false}
+  expected_outcome: conclusive
+  expected_confidence: high
+  corrective_actions:
+    - {rank: 1, category: mitigate, action: "Pause or throttle dispatch on the trunk so total attempts (new + retries) stay under 15/sec; re-schedule contacts wrongly marked UNREACHABLE.", rationale: "Breaks the loop and recovers affected contacts."}
+    - {rank: 2, category: fix, action: "Exponential backoff with jitter for rate-limit retries.", rationale: "Desynchronizes retries so they stop arriving in waves."}
+    - {rank: 3, category: fix, action: "Global attempt-rate limiter covering new and retry attempts, plus a circuit breaker that pauses dispatch when the 429 ratio is high.", rationale: "Obeys carrier backpressure automatically."}
+    - {rank: 4, category: fix, action: "Do not count carrier rate-limit rejections as contact attempts; track them separately with their own cap.", rationale: "A rejected attempt never rang the contact."}
+    - {rank: 5, category: detect, action: "Alert on 429 ratio and on total attempt rate vs the carrier limit; verify that retried attempts actually re-dial.", rationale: "Detects the loop early and confirms fixes work in production."}
+  must_not:
+    - Conclude we exceeded the concurrent channel limit.
+    - Blame only the carrier without changing our retry behaviour.

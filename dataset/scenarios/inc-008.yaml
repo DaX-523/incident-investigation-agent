@@ -1,0 +1,179 @@
+id: inc-008
+incident_report:
+  reported_at: 2026-08-21 14:05:00+00:00
+  reporter: customer support
+  severity: SEV2
+  title: Orders stuck in "Processing", confirmation emails not sent
+  description: |
+    Since roughly 13:20 some customers say their order is stuck in Processing and they never
+    got a confirmation email. Not all orders - most go through fine.
+environment:
+  window:
+    start: 2026-08-21 13:00:00+00:00
+    end: 2026-08-21 14:30:00+00:00
+  topology:
+    services:
+    - name: checkout-svc
+      kind: service
+      depends_on: [kafka]
+      notes: Produces OrderPlaced events to topic order-events (12 partitions)
+    - name: kafka
+      kind: kafka
+      notes: 3 brokers; topic order-events RF=3
+    - name: orders-worker
+      kind: consumer
+      depends_on: [kafka, orders-db, notification-svc]
+      notes: 'StatefulSet of 12 pods, static assignment: orders-worker-N consumes partition N. No dead-letter queue.'
+    - name: notification-svc
+      kind: service
+    - name: orders-db
+      kind: postgres
+    - name: logging-es
+      kind: elasticsearch
+      notes: centralized log search backend
+  metrics:
+  - service: kafka
+    name: consumer_lag
+    unit: messages
+    labels:
+      topic: order-events
+      partition: '7'
+    start: 2026-08-21 13:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 14, 61, 118, 170, 225, 281, 338, 392, 447, 505, 560, 618, 671, 730]
+  - service: kafka
+    name: consumer_lag
+    unit: messages
+    labels:
+      topic: order-events
+      partition: '2'
+    start: 2026-08-21 13:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 52, 104, 160, 213, 270, 322]
+  - service: kafka
+    name: consumer_lag
+    unit: messages
+    labels:
+      topic: order-events
+      partition: other(max)
+    start: 2026-08-21 13:00:00+00:00
+    step_seconds: 300
+    values: [0, 1, 0, 2, 1, 0, 1, 0, 2, 1, 0, 1, 0, 2, 1, 0, 1, 0]
+  - service: orders-worker
+    name: container_restarts_total
+    unit: count
+    labels:
+      pod: orders-worker-7
+    start: 2026-08-21 13:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]
+  - service: orders-worker
+    name: container_restarts_total
+    unit: count
+    labels:
+      pod: orders-worker-2
+    start: 2026-08-21 13:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3, 5, 6, 7, 8, 9, 10]
+  - service: kafka
+    name: under_replicated_partitions
+    unit: count
+    labels:
+      broker: '2'
+    start: 2026-08-21 13:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 14, 9, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  logs:
+  - ts: 2026-08-21 13:17:51+00:00
+    service: orders-worker
+    level: FATAL
+    message: 'Unhandled exception decoding OrderPlaced at order-events/7 offset 918223: IllegalArgumentException: No enum constant GiftWrap.PREMIUM_BOX'
+    attrs:
+      pod: orders-worker-7
+  - ts: 2026-08-21 13:52:14+00:00
+    service: orders-worker
+    level: FATAL
+    message: 'Unhandled exception decoding OrderPlaced at order-events/2 offset 902817: IllegalArgumentException: No enum constant GiftWrap.PREMIUM_BOX'
+    attrs:
+      pod: orders-worker-2
+  traces:
+  - trace_id: t-c08-produce-3
+    start: 2026-08-21 13:40:10+00:00
+    duration_ms: 280
+    status: ok
+    spans:
+    - service: checkout-svc
+      operation: POST /checkout
+      duration_ms: 280
+      status: ok
+      attrs:
+        version: v4.1.0
+    - service: kafka
+      operation: produce order-events
+      duration_ms: 5
+      status: ok
+      attrs:
+        partition: 5
+    - service: orders-worker
+      operation: consume OrderPlaced
+      duration_ms: 40
+      status: ok
+      attrs:
+        partition: 5
+  changes:
+  - ts: 2026-08-21 13:05:00+00:00
+    kind: deploy
+    service: checkout-svc
+    summary: 'checkout-svc v4.0.3 -> v4.1.0: premium gift wrap option'
+    author: checkout-team
+  - ts: 2026-08-21 13:28:00+00:00
+    kind: infra
+    service: kafka
+    summary: Planned rolling restart of broker 2 (JVM patch)
+    author: data-platform
+  infra_events:
+  - ts: 2026-08-21 12:45:00+00:00
+    source: logging-es
+    entity: cluster/logging-es
+    reason: Maintenance
+    message: 'Planned maintenance 12:45-15:00 UTC: shard reallocation, search may time out'
+  - ts: 2026-08-21 13:17:52+00:00
+    source: kubernetes
+    entity: pod/orders-worker-7
+    reason: BackOff
+    message: Back-off restarting failed container orders-worker (exit code 1)
+  - ts: 2026-08-21 13:52:15+00:00
+    source: kubernetes
+    entity: pod/orders-worker-2
+    reason: BackOff
+    message: Back-off restarting failed container orders-worker (exit code 1)
+  alerts:
+  - ts: 2026-08-21 13:31:00+00:00
+    name: KafkaUnderReplicatedPartitions
+    severity: warning
+    entity: kafka/broker-2
+    state: firing
+    summary: 14 under-replicated partitions
+  - ts: 2026-08-21 13:38:00+00:00
+    name: KafkaUnderReplicatedPartitions
+    severity: warning
+    entity: kafka/broker-2
+    state: resolved
+    summary: 0 under-replicated partitions
+  runbooks:
+  - id: rb-consumer-lag
+    title: Kafka consumer lag
+    body: Check broker health first. If a single consumer is crash-looping, inspect its logs for the failing offset; skip with `kcat`/offset reset only after saving the message.
+  past_incidents:
+  - id: PIR-2026-061
+    date: '2026-07-30T00:00:00Z'
+    title: Order processing lag during Kafka maintenance
+    summary: Consumer lag rose on several partitions during a broker restart; recovered after 12 minutes.
+    root_cause: Leader elections during rolling restart.
+    resolution: Restart broker during low traffic.
+tool_faults:
+- tool: search_logs
+  mode: timeout
+  fails_for_attempts: null
+  error_message: 'ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)'
+  note: Centralized logs are unavailable for the whole window; the FATAL decode errors exist but can't be retrieved.

@@ -1,0 +1,71 @@
+id: inc-002
+metadata:
+  id: inc-002
+  title: Deploy lands 4 minutes before an internal mTLS certificate expires
+  primary_tag: misleading_evidence
+  tags: [misleading_evidence]
+  difficulty: L2
+  provenance: synthetic
+  inspired_by: Public certificate-expiry outages (e.g. expired internal/intermediate certs) combined with a coincidental deploy
+ground_truth:
+  root_cause:
+    statement: The payments-svc mTLS certificate expired at 09:14:00 because cert-manager renewals had failed since 07-31, after the 07-28 ClusterRole tightening removed its permission to read the internal-ca Issuer.
+    fault_type: certificate_expiry
+    entity: Certificate/payments-svc-mtls (cert-manager RBAC)
+    aliases: [expired payments-svc mTLS cert, cert-manager renewal failure, 'PR #2231 cert-manager RBAC change']
+  contributing_factors:
+  - statement: No alert on certificate expiry or on cert-manager IssuingFailed events; failures went unnoticed for 3 days.
+    must_mention: true
+  - statement: The runbook's rollback-first guidance anchored responders on the coincidental deploy.
+  propagation_chain: [07-28 ClusterRole change removes cert-manager access to Issuer, 07-31 onward renewals fail silently, '08-03 09:14:00 cert expires', all checkout->payments gRPC handshakes fail, ~95% of checkouts fail (all that reach payment)]
+  red_herrings:
+  - claim: checkout-svc v3.8.1 deploy caused the outage.
+    why_wrong: Errors begin at 09:14:00 exactly (cert notAfter), 2 minutes after rollout finished; v3.8.0 pods fail identically, and rollback at 09:22 did not help. The diff only touched an email template.
+    disproved_by: [ev_version_split, ev_rollback, ev_changes]
+  - claim: The rollback did not take effect.
+    why_wrong: Logs show v3.8.0 pods running after rollback and still failing with the same x509 error.
+    disproved_by: [ev_logs]
+  key_evidence:
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: checkout-svc
+    description: x509 expired errors from both versions with notAfter 09:14:00
+  - id: ev_version_split
+    tool: query_metrics
+    args:
+      service: checkout-svc
+    description: Error rate identical for v3.8.0 and v3.8.1
+  - id: ev_rollback
+    tool: get_changes
+    description: Rollback at 09:22 with no recovery
+  - id: ev_changes
+    tool: get_changes
+    description: Deploy diff only touched an email template; RBAC change on 07-28
+    required: false
+  - id: ev_cert_events
+    tool: get_infra_events
+    description: cert-manager IssuingFailed since 07-31 with RBAC forbidden error
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Manually issue/rotate the payments-svc mTLS certificate (or temporarily restore cert-manager Issuer read access and force renewal).
+    rationale: Restores checkout->payments handshakes immediately.
+  - rank: 2
+    category: fix
+    action: 'Restore the minimum RBAC cert-manager needs to read Issuers in workload namespaces (amend PR #2231).'
+    rationale: Fixes renewals for all certificates, not just this one.
+  - rank: 3
+    category: detect
+    action: Alert on certificates expiring within 14 days and on any IssuingFailed/NotReady certificate.
+    rationale: The failure was visible 3 days in advance.
+  - rank: 4
+    category: prevent
+    action: Audit all cert-manager Certificates for other renewals blocked by the same RBAC change.
+    rationale: Other services may expire next.
+  - rank: 5
+    category: prevent
+    action: 'Update the rollback-first runbook: confirm error signature/version split before attributing to a deploy.'
+    rationale: Reduces anchoring on coincidental deploys.
+  must_not: [Name the checkout-svc v3.8.1 deploy as root cause., Recommend further rollbacks as the primary fix.]

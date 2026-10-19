@@ -1,0 +1,157 @@
+id: inc-010
+incident_report:
+  reported_at: 2026-10-02 20:20:00+00:00
+  reporter: on-call SRE
+  severity: SEV1
+  title: API returning 503s since ~20:05; possible DDoS?
+  description: |
+    Massive traffic spike at 20:05 and lots of 503s from the API. Prometheus also died
+    around the same time so dashboards have a hole. Is this a DDoS? What do we do?
+environment:
+  window:
+    start: 2026-10-02 19:30:00+00:00
+    end: 2026-10-02 21:00:00+00:00
+  topology:
+    services:
+    - name: alb
+      kind: load_balancer
+      depends_on: [api]
+      notes: AWS ALB; metrics via CloudWatch (independent of Prometheus)
+    - name: api
+      kind: service
+      depends_on: [orders-db]
+      notes: HPA on CPU 70%; minReplicas 6
+    - name: orders-db
+      kind: postgres
+    - name: prometheus
+      kind: monitoring
+  metrics:
+  - service: api
+    name: requests_per_sec
+    unit: rps
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [900, 920, 910, 930, 940, 950, 1000, 6100, null, null, null, null, null, 5200, 3900, 2600, 1700, 1200]
+  - service: api
+    name: replicas
+    unit: count
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [6, 6, 6, 6, 6, 6, 6, 12, null, null, null, null, null, 12, 12, 12, 10, 8]
+  - service: api
+    name: cpu_utilization_avg
+    unit: percent
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [45, 46, 45, 47, 46, 47, 50, 96, null, null, null, null, null, 93, 85, 70, 62, 55]
+  - service: api
+    name: http_503_rate
+    unit: percent
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 22.0, null, null, null, null, null, 9.0, 4.0, 1.5, 0.4, 0.2]
+  - service: alb
+    name: request_count_per_sec
+    unit: rps
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [920, 935, 925, 945, 955, 965, 1010, 6150, 7400, 7300, 6900, 6400, 5800, 5250, 3950, 2650, 1750, 1250]
+  - service: alb
+    name: http_5xx_rate
+    unit: percent
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 21.5, 38.0, 36.2, 30.1, 22.4, 14.8, 9.2, 4.1, 1.6, 0.5, 0.2]
+  - service: alb
+    name: unique_client_ips
+    unit: count
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [41000, 41500, 41200, 41800, 42000, 42300, 44000, 395000, 512000, 498000, 470000, 430000, 390000, 352000, 270000, 182000, 121000, 86000]
+  - service: orders-db
+    name: cpu_utilization
+    unit: percent
+    start: 2026-10-02 19:30:00+00:00
+    step_seconds: 300
+    values: [30, 31, 30, 31, 32, 31, 33, 55, 61, 62, 60, 58, 56, 54, 47, 41, 36, 33]
+  logs:
+  - ts: 2026-10-02 20:00:05+00:00
+    service: api
+    level: INFO
+    message: 'push campaign deep link traffic: utm_campaign=diwali_flash (log sampling 10%)'
+  - ts: 2026-10-02 20:06:12+00:00
+    service: alb
+    level: WARN
+    message: 503 Service Unavailable target_status=- (no healthy target capacity) user_agent=ShopApp/7.4 (Android)
+  - ts: 2026-10-02 20:07:40+00:00
+    service: api
+    level: WARN
+    message: request queue full (max 200), rejecting with 503
+  - ts: 2026-10-02 20:09:01+00:00
+    service: prometheus
+    level: ERROR
+    message: 'out of memory: series churn from high-cardinality campaign labels'
+  changes:
+  - ts: 2026-09-29 10:00:00+00:00
+    kind: config
+    service: api
+    summary: HPA maxReplicas 40 -> 12 (FinOps cost review)
+    author: platform-team
+    details: 'Justification: api has not exceeded 10 replicas in the last 14 days.'
+  - ts: 2026-10-02 20:00:00+00:00
+    kind: scheduled_job
+    service: api
+    summary: Marketing push notification 'Diwali flash sale' sent to 2.1M users
+    author: marketing-automation
+  infra_events:
+  - ts: 2026-10-02 20:05:30+00:00
+    source: kubernetes
+    entity: hpa/api
+    reason: ScalingLimited
+    message: the desired replica count (34) is more than the maximum replica count (12)
+  - ts: 2026-10-02 20:09:10+00:00
+    source: kubernetes
+    entity: pod/prometheus-0
+    reason: OOMKilled
+    message: Container prometheus exceeded memory limit
+  - ts: 2026-10-02 20:31:00+00:00
+    source: kubernetes
+    entity: pod/prometheus-0
+    reason: Started
+    message: Started container prometheus (WAL replay complete; samples 20:09-20:31 lost)
+  alerts:
+  - ts: 2026-10-02 20:06:00+00:00
+    name: API5xxHigh
+    severity: critical
+    entity: api
+    state: firing
+    summary: 503 rate > 5%
+  external_reports:
+  - name: campaign_history
+    kind: marketing_calendar
+    generated_at: 2026-10-02 20:15:00+00:00
+    body: |
+      2026-09-05 20:00 'Ganesh Chaturthi offers' push to 1.8M users -> api peaked at 31 replicas, no errors.
+      2026-10-02 20:00 'Diwali flash sale' push to 2.1M users.
+      No capacity pre-scaling step exists in the campaign checklist.
+  past_incidents:
+  - id: PIR-2025-180
+    date: '2025-10-11T00:00:00Z'
+    title: L7 DDoS against API
+    summary: Flood of requests from ~3k IPs with a randomized user agent against /search.
+    root_cause: Botnet attack.
+    resolution: WAF rate-based rule.
+  - id: PIR-2026-047
+    date: '2026-09-06T00:00:00Z'
+    title: Ganesh Chaturthi campaign review (no incident)
+    summary: Push to 1.8M users; API autoscaled to 31 replicas; no errors.
+    root_cause: n/a
+    resolution: n/a
+tool_faults:
+- tool: query_metrics
+  match:
+    service: orders-db
+  mode: error
+  fails_for_attempts: 1
+  error_message: '503 from metrics API: upstream prometheus not ready'
+  note: Flaky first call; a retry succeeds. Tests whether the agent retries before giving up on a source.

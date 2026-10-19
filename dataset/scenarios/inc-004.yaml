@@ -1,0 +1,150 @@
+id: inc-004
+incident_report:
+  reported_at: 2026-10-06 12:10:00+00:00
+  reporter: customer support lead
+  severity: SEV2
+  title: Login down for many customers - looks like a network/ISP outage
+  description: |
+    Lots of tickets in the last 15 minutes: customers can't log in, the spinner just hangs.
+    I think it's a network outage - Cloudflare's status page shows degraded performance
+    right now. Can engineering confirm it's the ISP/Cloudflare and post a status update?
+environment:
+  window:
+    start: 2026-10-06 11:00:00+00:00
+    end: 2026-10-06 12:45:00+00:00
+  topology:
+    services:
+    - name: cdn-edge
+      kind: external
+      notes: Cloudflare in front of all web traffic
+    - name: api-gateway
+      kind: gateway
+      depends_on: [auth-svc, catalog-svc]
+    - name: auth-svc
+      kind: service
+      depends_on: [users-db]
+      notes: JVM service using HikariCP
+    - name: catalog-svc
+      kind: service
+    - name: users-db
+      kind: postgres
+  metrics:
+  - service: auth-svc
+    name: login_requests_per_sec
+    unit: rps
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [40, 44, 49, 55, 62, 70, 81, 95, 110, 130, 150, 175, 200, 215, 220, 222, 218, 221, 219, 220, 217]
+  - service: auth-svc
+    name: latency_p99
+    unit: ms
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [120, 118, 122, 119, 121, 124, 123, 126, 125, 410, 2900, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000, 30000]
+  - service: auth-svc
+    name: db_pool_active_connections
+    unit: count
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [12, 13, 14, 15, 17, 18, 19, 21, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5]
+  - service: auth-svc
+    name: db_pool_pending_threads
+    unit: count
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 14, 61, 140, 143, 151, 149, 147, 150, 148, 146, 149]
+  - service: users-db
+    name: cpu_utilization
+    unit: percent
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [18, 19, 20, 21, 22, 23, 24, 25, 14, 14, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15]
+  - service: catalog-svc
+    name: latency_p99
+    unit: ms
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [95, 94, 96, 95, 97, 96, 98, 97, 96, 97, 98, 97, 96, 98, 97, 96, 97, 98, 96, 97, 96]
+  - service: cdn-edge
+    name: origin_packet_loss
+    unit: percent
+    start: 2026-10-06 11:00:00+00:00
+    step_seconds: 300
+    values: [0.01, 0.01, 0.02, 0.01, 0.01, 0.01, 0.02, 0.01, 0.01, 0.01, 0.02, 0.01, 0.01, 0.01, 0.02, 0.01, 0.01, 0.01, 0.01, 0.02, 0.01]
+  logs:
+  - ts: 2026-10-06 11:41:05+00:00
+    service: auth-svc
+    level: INFO
+    message: HikariPool-1 - Starting... (maximumPoolSize=5, minimumIdle=5)
+  - ts: 2026-10-06 11:57:30+00:00
+    service: auth-svc
+    level: WARN
+    message: HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m2s)
+  - ts: 2026-10-06 12:01:14+00:00
+    service: auth-svc
+    level: ERROR
+    message: HikariPool-1 - Connection is not available, request timed out after 30000ms (total=5, active=5, idle=0, waiting=143)
+  - ts: 2026-10-06 12:03:40+00:00
+    service: api-gateway
+    level: WARN
+    message: upstream auth-svc response time 30012ms for POST /login
+  - ts: 2026-10-06 12:04:02+00:00
+    service: catalog-svc
+    level: INFO
+    message: GET /products 200 in 41ms
+  traces:
+  - trace_id: t-c04-login-1
+    start: 2026-10-06 12:02:00+00:00
+    duration_ms: 30020
+    status: error
+    spans:
+    - service: api-gateway
+      operation: POST /login
+      duration_ms: 30020
+      status: error
+    - service: auth-svc
+      operation: getConnection
+      duration_ms: 30000
+      status: error
+      attrs:
+        error: Connection is not available
+  changes:
+  - ts: 2026-10-06 11:40:00+00:00
+    kind: config
+    service: auth-svc
+    summary: 'Tune DB pool (PR #874): set AUTH_DB_POOL_MAX=5'
+    author: identity-team
+    details: PR description says 'set minimum idle connections to 5'; the env var changed was AUTH_DB_POOL_MAX (previously 50).
+  external_reports:
+  - name: cloudflare_status
+    kind: vendor_status_page
+    generated_at: 2026-10-06 12:05:00+00:00
+    body: Degraded performance - São Paulo (GRU) data center. Customers routed through GRU may see increased latency. All other regions operational.
+  - name: support_ticket_summary
+    kind: ticketing
+    generated_at: 2026-10-06 12:08:00+00:00
+    body: '41 tickets in 15 min. Regions: DE 14, FR 9, UK 8, NL 5, other EU 5. Complaints: login spinner hangs; browsing products works.'
+  alerts:
+  - ts: 2026-10-06 11:58:00+00:00
+    name: AuthLatencyHigh
+    severity: warning
+    entity: auth-svc
+    state: firing
+    summary: p99 > 2s
+  past_incidents:
+  - id: PIR-2025-201
+    date: '2025-12-03T00:00:00Z'
+    title: EU login failures during ISP routing incident
+    summary: Customers on two EU ISPs could not reach us for 50 minutes; other ISPs fine.
+    root_cause: Upstream BGP route leak at a transit provider.
+    resolution: Resolved by provider; no action on our side.
+  - id: PIR-2026-009
+    date: '2026-02-17T00:00:00Z'
+    title: auth-svc slow logins
+    summary: Logins slow for 20 minutes; Hikari pool saturated.
+    root_cause: Missing index on sessions table made each login hold a connection longer.
+    resolution: Added index.
+tool_faults:
+- tool: get_traces
+  mode: empty
+  note: Trace sampling was disabled for auth-svc; the tool returns an empty list with no error.

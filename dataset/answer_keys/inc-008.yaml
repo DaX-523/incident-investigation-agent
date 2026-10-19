@@ -1,0 +1,62 @@
+id: inc-008
+metadata:
+  id: inc-008
+  title: Log search down; partition stalls can't be attributed with available evidence
+  primary_tag: tool_failure
+  tags: [tool_failure, misleading_evidence, incomplete_data]
+  difficulty: L4
+  provenance: synthetic
+  inspired_by: Poison-pill / schema-compatibility postmortems in event-driven systems
+ground_truth:
+  root_cause:
+    statement: 'Actual cause (for grading the hypothesis ranking): checkout-svc v4.1.0 began emitting a new GiftWrap enum value that orders-worker cannot decode; the consumer crash-loops on the first such message per partition (p7 at 13:17, p2 at 13:52). With log search down and no payload/trace evidence linking the stuck offsets to the new field, the correct report is inconclusive: rank ''poison message from the 13:05 checkout-svc v4.1.0 change'' as the leading hypothesis and state what data would confirm it.'
+    fault_type: poison_message_schema_incompatibility
+    entity: orders-worker v3.2 consumer vs OrderPlaced schema v12 (checkout-svc v4.1.0)
+    aliases: [poison message, PREMIUM_BOX enum not supported by consumer, schema v12 incompatibility, checkout-svc v4.1.0 schema change]
+  contributing_factors:
+  - statement: No dead-letter queue or skip-on-decode-failure in orders-worker.
+    must_mention: true
+  - statement: Log search unavailable, so the exact exception could not be confirmed during the investigation.
+    must_mention: true
+  propagation_chain: ['13:05 producer emits schema v12', 'first PREMIUM_BOX order lands on p7 (13:17), later p2 (13:52)', consumer pod for that partition crash-loops on the offset, 'lag grows on p7/p2 only; those orders stay Processing, no emails']
+  red_herrings:
+  - claim: Kafka broker 2 problem (under-replicated partitions).
+    why_wrong: Broker 2 restart was planned at 13:28, after onset at 13:17; under-replication cleared by 13:38 while lag kept growing on only two partitions; other partitions are consumed normally.
+    disproved_by: [ev_lag, ev_changes]
+  key_evidence:
+  - id: ev_lag
+    tool: query_metrics
+    args:
+      service: kafka
+    description: lag only on partitions 7 and 2, onsets 13:17 / 13:52
+  - id: ev_restarts
+    tool: get_infra_events
+    description: orders-worker-7 and -2 crash-looping from the same times
+  - id: ev_changes
+    tool: get_changes
+    description: checkout-svc v4.1.0 deploy at 13:05 precedes the first stall by 12 minutes (correlation only)
+  - id: ev_log_attempt
+    tool: search_logs
+    description: Agent attempts log search (fails); should report it and continue
+    required: true
+  expected_confidence: low
+  missing_data_to_request: ['orders-worker crash output for pods 7 and 2 (kubectl logs --previous, or log search once logging-es maintenance ends)', 'The messages at the stuck offsets (order-events/7 offset 918223, order-events/2 offset 902817)', 'The checkout-svc v4.1.0 diff / event schema change, to check consumer compatibility']
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: 'Gather the missing evidence first: pull previous-container logs of orders-worker-7/-2 and inspect the messages at the stuck offsets.'
+    rationale: Needed to confirm or reject the leading hypothesis; cheap and fast.
+  - rank: 2
+    category: mitigate
+    action: If a poison message is confirmed, save and skip those offsets (or roll back checkout-svc v4.1.0) and reprocess held orders.
+    rationale: Unblocks partitions 7 and 2 without guessing.
+  - rank: 3
+    category: prevent
+    action: Add a dead-letter path for messages that fail processing in orders-worker.
+    rationale: One bad message must not halt a partition regardless of cause.
+  - rank: 4
+    category: detect
+    action: Alert on per-partition lag and consumer crash loops; keep a log path independent of logging-es during maintenance.
+    rationale: Faster detection and investigation next time.
+  must_not: [State a definitive root cause with high confidence., Blame Kafka broker 2.]
+  expected_outcome: inconclusive

@@ -1,0 +1,98 @@
+id: inc-012
+metadata:
+  id: inc-012
+  title: 'Buttercut: AI crawlers drive EC2 data-transfer-out cost anomaly'
+  primary_tag: real_incident
+  tags: [real_incident, conflicting_observability, misleading_evidence]
+  difficulty: L3
+  provenance: real_reconstruction
+  inspired_by: Real incident at Buttercut, late April to early May 2026 (only the AWS alert figures are real)
+  confirmed_facts: ['AWS Cost Anomaly Detection alert dated 2026-05-06: Amazon EC2 - Compute, ap-south-1, usage type APS3-DataTransfer-Out-Bytes; start 2026-04-29, last detected 2026-05-05, 7 days; max daily impact $74.80; total impact $205.53; impact contribution $211.51.', 'Cause: AI/LLM crawlers crawling the site.']
+  synthetic_details: ['Architecture, service names, robots.txt and nginx config snapshots, URL paths and change history are generic reconstructions.', The daily split of the $205.53 (only the max $74.80 and the total are real)., 'Request counts, GB, CPU, analytics numbers, bot mix, byte breakdown, log lines and the report timestamp.']
+  to_confirm: []
+ground_truth:
+  root_cause:
+    statement: From ~2026-04-29 AI/LLM crawlers (GPTBot, Bytespider, ClaudeBot, meta-externalagent, etc.) crawled the site heavily. robots.txt allowed every agent, and the SPA fallback answered any path with 200, so crawlers explored an effectively unbounded URL space and repeatedly downloaded multi-MB JS bundles and blog assets from the single EC2 origin. With no CDN or rate limiting, every byte was billed as EC2 data-transfer-out.
+    fault_type: unbounded_bot_crawl_cost_anomaly
+    entity: nginx-edge EC2 origin / AI crawlers
+    aliases: [AI bot crawling, LLM crawler traffic, crawler-driven egress, bots crawling the site]
+  contributing_factors:
+  - statement: 'robots.txt ''Allow: /'' for all user agents with no AI-crawler rules.'
+    must_mention: true
+  - statement: SPA fallback returns 200 for nonexistent routes (soft-404), creating an unbounded crawl space; the 404 share drops as traffic rises.
+    must_mention: true
+  - statement: No CDN/cache in front of the EC2 origin, so all crawler bytes are AWS egress.
+    must_mention: true
+  - statement: No per-user-agent or per-IP rate limiting in nginx.
+  propagation_chain: [~04-29 AI crawler volume ramps up, robots.txt permits all; soft-404 SPA routes multiply crawlable URLs, crawlers download JS bundles and blog assets from the EC2 origin, nginx requests and egress rise ~20x at peak, APS3-DataTransfer-Out cost peaks at $74.80/day above baseline]
+  red_herrings:
+  - claim: DDoS attack.
+    why_wrong: Traffic self-identifies as known crawlers from their published ranges and fetches robots.txt; it is crawl-shaped (millions of distinct paths), and the backend API is unaffected.
+    disproved_by: [ev_top_talkers, ev_logs, ev_backend]
+  - claim: A frontend bug or release causing request loops.
+    why_wrong: No frontend change since 04-17; Web analytics (real browsers) is flat, so real users are not generating the extra requests.
+    disproved_by: [ev_changes, ev_web-analytics]
+  - claim: Organic growth from the SEO work.
+    why_wrong: Human visitors and signups are flat; the growth is entirely non-JS clients.
+    disproved_by: [ev_web-analytics]
+  key_evidence:
+  - id: ev_requests
+    tool: query_metrics
+    args:
+      service: nginx-edge
+    description: requests and egress up ~20x at peak, starting 04-29
+  - id: ev_web-analytics
+    tool: query_metrics
+    args:
+      service: web-analytics
+    description: human visitors flat - conflicts with nginx counts
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: nginx-edge
+    description: crawler user agents hitting nonexistent SPA paths with 200 and large bundles
+  - id: ev_top_talkers
+    tool: get_external_report
+    args:
+      name: nginx_access_top_talkers
+    description: bot share of requests and bytes
+  - id: ev_config
+    tool: get_external_report
+    args:
+      name: robots_txt_snapshot
+    description: robots.txt allows all
+    required: false
+  - id: ev_changes
+    tool: get_changes
+    description: no frontend release in the window
+    required: false
+  - id: ev_backend
+    tool: query_metrics
+    args:
+      service: backend-api
+    description: backend API traffic flat
+    required: false
+  expected_outcome: conclusive
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Rate-limit known AI crawler user agents in nginx (limit_req keyed on user agent) and block the most aggressive ones.
+    rationale: Immediately caps origin egress, including crawlers that ignore robots.txt.
+  - rank: 2
+    category: mitigate
+    action: Disallow AI training crawlers in robots.txt (GPTBot, Bytespider, ClaudeBot, Amazonbot, ...) while keeping search engines.
+    rationale: Compliant crawlers stop within hours.
+  - rank: 3
+    category: fix
+    action: Serve static assets and media through a CDN / object storage without egress fees (e.g. Cloudflare R2) with caching.
+    rationale: Removes per-GB AWS egress and shields the origin.
+  - rank: 4
+    category: fix
+    action: Return real 404s for unknown SPA routes.
+    rationale: Closes the unbounded soft-404 crawl space.
+  - rank: 5
+    category: detect
+    action: Lower Cost Anomaly Detection thresholds / add daily budget alerts on DataTransfer-Out, plus a requests-by-user-agent dashboard.
+    rationale: The anomaly ran 7 days before the alert email.
+  must_not: [Call it a DDoS attack., Attribute it to a frontend release.]

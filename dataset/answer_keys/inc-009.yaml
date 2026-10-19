@@ -1,0 +1,74 @@
+id: inc-009
+metadata:
+  id: inc-009
+  title: Metrics tool silently serves stale data during a search outage
+  primary_tag: tool_failure
+  tags: [tool_failure, misleading_evidence, conflicting_observability]
+  difficulty: L4
+  provenance: synthetic
+  inspired_by: Silent monitoring failures (dropped scrape targets) plus replica-less Elasticsearch shard loss
+ground_truth:
+  root_cause:
+    statement: Data node es-data-3 failed at 15:17 (EC2 hardware status check). Because the products index had been running with zero replicas since the 09-16 reindex, 2 of its 10 primary shards became unassigned, so ~20% of searches return partial results and brand-filtered searches routed to those shards fail.
+    fault_type: data_node_loss_without_replicas
+    entity: es-products (es-data-3, products index number_of_replicas=0)
+    aliases: [es-data-3 node loss, unassigned primary shards, number_of_replicas=0, Elasticsearch cluster RED]
+  contributing_factors:
+  - statement: Replicas disabled during reindex were never re-enabled (SRCH-311 open).
+    must_mention: true
+  - statement: search-svc metrics are stale since the 12:55 Prometheus relabel change, so dashboards falsely look healthy and no alert fired.
+    must_mention: true
+  propagation_chain: [09-16 products index reindexed with 0 replicas, '15:17 es-data-3 hardware failure', '2 primary shards unassigned, cluster RED', search-svc partial results (~20%) and failures on filtered queries]
+  red_herrings:
+  - claim: search-svc is healthy per metrics; the web-frontend v12.3.0 release is the cause.
+    why_wrong: The search-svc metrics returned end at 12:50 (stale); frontend JS errors are flat; logs and ES events show shard failures from 15:18.
+    disproved_by: [ev_stale_detected, ev_es_events, ev_frontend_metrics]
+  key_evidence:
+  - id: ev_stale_detected
+    tool: query_metrics
+    args:
+      service: search-svc
+    description: Agent must notice returned timestamps end at 12:50 and not trust them
+  - id: ev_es_events
+    tool: get_infra_events
+    description: es-data-3 status check failed 15:17; cluster RED with unassigned primaries
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: search-svc
+    description: 2 of 10 shards failed
+  - id: ev_es_metrics
+    tool: query_metrics
+    args:
+      service: es-products
+    description: data nodes 3 -> 2, unassigned shards 2
+    required: false
+  - id: ev_changes
+    tool: get_changes
+    description: replicas=0 since 09-16; prometheus relabel 12:55
+  - id: ev_frontend_metrics
+    tool: query_metrics
+    args:
+      service: web-frontend
+    description: JS errors flat
+    required: false
+  expected_confidence: high
+  missing_data_to_request: [Fresh search-svc metrics (restore the scrape target) to quantify the impact precisely]
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Replace/restart es-data-3 (or restore the 2 shards from snapshot) to bring primaries back; consider disabling brand filters returning errors meanwhile.
+    rationale: Restores full search results.
+  - rank: 2
+    category: fix
+    action: Set number_of_replicas>=1 on products and close SRCH-311.
+    rationale: A single node loss should not lose primaries.
+  - rank: 3
+    category: fix
+    action: Revert/fix the 12:55 Prometheus relabel so search-svc is scraped again.
+    rationale: Restores visibility.
+  - rank: 4
+    category: detect
+    action: Alert on absent()/stale series and on ES cluster health != green.
+    rationale: Silent monitoring loss hid this incident.
+  must_not: [Conclude search-svc is healthy based on stale metrics., Blame the web-frontend v12.3.0 release.]

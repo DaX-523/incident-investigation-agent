@@ -1,0 +1,76 @@
+id: inc-010
+metadata:
+  id: inc-010
+  title: Push-campaign surge meets a lowered autoscaling cap, with a metrics gap
+  primary_tag: incomplete_data
+  tags: [incomplete_data, multi_cause, tool_failure]
+  difficulty: L4
+  provenance: synthetic
+  inspired_by: Capacity postmortems where neither the trigger nor the latent condition alone causes the outage
+ground_truth:
+  root_cause:
+    statement: 'Two causes together: (1) the 20:00 push campaign to 2.1M users raised API traffic ~7x, and (2) the 09-29 FinOps change capped API autoscaling at 12 replicas, when the HPA wanted 34 (a similar campaign on 09-05 needed 31). Neither alone causes the outage: normal peaks fit in 12 replicas, and the 09-05 campaign was handled with max 40.'
+    fault_type: capacity_exhaustion_multi_cause
+    entity: api HPA maxReplicas=12 + diwali_flash push campaign
+    aliases: [HPA maxReplicas capped at 12, campaign traffic surge, autoscaling limit reached]
+  contributing_factors:
+  - statement: The 09-29 cost change sized maxReplicas from a 14-day window that contained no campaign.
+    must_mention: true
+  - statement: The campaign checklist has no capacity pre-scaling step.
+    must_mention: true
+  - statement: Prometheus OOMed under campaign label cardinality, creating a 20:09-20:31 metrics gap.
+  propagation_chain: ['20:00 push to 2.1M users', traffic ~1k -> ~7.4k rps (from real app clients), 'HPA desires 34 replicas, capped at 12; CPU 96%', request queues fill -> 503s (ALB 5xx peak ~38%), 'recovers as traffic decays after ~20:35']
+  red_herrings:
+  - claim: DDoS attack.
+    why_wrong: The surge starts exactly at the push send time, from ~500k distinct IPs with the ShopApp user agent and campaign deep links; a comparable campaign is on record.
+    disproved_by: [ev_changes, ev_alb, ev_campaign]
+  - claim: orders-db is the bottleneck.
+    why_wrong: DB CPU peaks at ~62%; requests are rejected at the API queue before reaching the DB.
+    disproved_by: [ev_db]
+  key_evidence:
+  - id: ev_hpa
+    tool: get_infra_events
+    description: HPA ScalingLimited desired 34 > max 12; prometheus OOM gap
+  - id: ev_changes
+    tool: get_changes
+    description: maxReplicas 40 -> 12 on 09-29; push campaign at 20:00
+  - id: ev_alb
+    tool: query_metrics
+    args:
+      service: alb
+    description: CloudWatch ALB metrics fill the Prometheus gap
+  - id: ev_campaign
+    tool: get_external_report
+    args:
+      name: campaign_history
+    description: 09-05 campaign needed 31 replicas
+  - id: ev_db
+    tool: query_metrics
+    args:
+      service: orders-db
+    description: DB fine (first call fails; retry)
+    required: false
+  expected_confidence: medium
+  missing_data_to_request: ['Pod-level CPU/queue metrics for 20:09-20:31 (lost in Prometheus gap)', Unsampled API logs (only 10% retained) to quantify rejected requests]
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Raise api HPA maxReplicas back to >=40 immediately.
+    rationale: Traffic is still elevated; prevents recurrence tonight.
+  - rank: 2
+    category: prevent
+    action: Add a capacity pre-scale/approval step to the campaign checklist, sized from campaign audience.
+    rationale: Campaigns are known, schedulable load.
+  - rank: 3
+    category: prevent
+    action: Base cost-driven limits on peak events (incl. campaigns), not a 14-day window; require SRE review for HPA max reductions.
+    rationale: The latent condition came from an incomplete analysis.
+  - rank: 4
+    category: detect
+    action: Alert when an HPA is at maxReplicas with desired > max.
+    rationale: Direct signal of capped scaling.
+  - rank: 5
+    category: prevent
+    action: Make Prometheus resilient (HA pair, cardinality limits on campaign labels).
+    rationale: Monitoring failed exactly when needed.
+  must_not: [Call it a DDoS., Present a single cause with high confidence while ignoring the other.]

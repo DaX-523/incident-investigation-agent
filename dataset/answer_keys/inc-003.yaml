@@ -1,0 +1,78 @@
+id: inc-003
+metadata:
+  id: inc-003
+  title: Gateway 504s caused by a cache eviction storm two hops downstream
+  primary_tag: misleading_evidence
+  tags: [misleading_evidence, conflicting_observability]
+  difficulty: L3
+  provenance: synthetic
+  inspired_by: Cache-collapse / thundering-herd postmortems where alerts fire only at the edge
+ground_truth:
+  root_cause:
+    statement: Enabling pdp_cache_include_reviews at 18:30 grew product-page cache values ~9x (4KB -> 38KB), filling Redis to maxmemory at ~19:05. The resulting mass LRU eviction dropped the hit ratio from 0.95 to 0.40, and the misses overloaded catalog-db with review queries; catalog-svc then timed out behind the gateway.
+    fault_type: cache_capacity_exhaustion_from_config_change
+    entity: feature flag pdp_cache_include_reviews / redis-cache
+    aliases: [pdp_cache_include_reviews flag, redis maxmemory eviction storm, cache value size increase]
+  contributing_factors:
+  - statement: No alerting on Redis memory, evictions, or hit ratio; only edge alerts exist.
+    must_mention: true
+  - statement: Cache misses fall through to the DB without request coalescing or load shedding.
+  propagation_chain: ['18:30 flag enabled -> larger cache values', '19:05 redis hits maxmemory -> allkeys-lru evictions', hit ratio 0.95 -> 0.40, 'catalog-db CPU 98%, pool exhausted', catalog-svc p99 5s, api-gateway 504s]
+  red_herrings:
+  - claim: The gateway is overloaded and needs scaling.
+    why_wrong: Gateway CPU falls during the incident and traces show time spent in catalog-svc/catalog-db.
+    disproved_by: [ev_gateway_cpu, ev_traces]
+  - claim: The TLS cipher change on the gateway caused it.
+    why_wrong: Applied at 17:50, 80 minutes before any degradation; requests reach upstream fine.
+    disproved_by: [ev_changes, ev_traces]
+  - claim: catalog-db is the root cause.
+    why_wrong: The DB is an intermediate victim of cache misses; its load rises only after evictions begin.
+    disproved_by: [ev_redis_metrics]
+  key_evidence:
+  - id: ev_traces
+    tool: get_traces
+    description: slow traces show cache miss then 4.6s catalog-db query
+  - id: ev_redis_metrics
+    tool: query_metrics
+    args:
+      service: redis-cache
+    description: memory at 100%, evictions spike, hit ratio collapse at 19:05
+  - id: ev_changes
+    tool: get_changes
+    description: pdp_cache_include_reviews enabled at 18:30
+  - id: ev_gateway_cpu
+    tool: query_metrics
+    args:
+      service: api-gateway
+    description: gateway CPU flat/falling
+    required: false
+  - id: ev_value_size
+    tool: query_metrics
+    args:
+      service: redis-cache
+      name: avg_value_size_bytes
+    description: value size 4KB -> 38KB after flag
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Disable pdp_cache_include_reviews and let the cache refill (optionally pre-warm hot products).
+    rationale: Removes the memory pressure driving evictions.
+  - rank: 2
+    category: mitigate
+    action: Temporarily shed or rate-limit PDP review loading on cache miss to protect catalog-db.
+    rationale: Breaks the miss->DB overload loop while the cache recovers.
+  - rank: 3
+    category: prevent
+    action: Store reviews in a separate, size-capped key (or paginate) and add a max value size guard for cached entries.
+    rationale: Prevents one feature from consuming cache capacity.
+  - rank: 4
+    category: detect
+    action: Alert on Redis memory > 85%, evictions > 0, and hit-ratio drops.
+    rationale: Cause-level signals would have fired ~35 minutes before user impact.
+  - rank: 5
+    category: prevent
+    action: Add request coalescing (single-flight) on cache misses in catalog-svc.
+    rationale: Limits thundering herd on the DB.
+  must_not: [Recommend scaling the gateway as the fix., Stop at catalog-db as root cause.]

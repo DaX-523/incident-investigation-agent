@@ -1,0 +1,72 @@
+id: inc-006
+metadata:
+  id: inc-006
+  title: Clock skew makes the effect appear before the cause
+  primary_tag: conflicting_observability
+  tags: [conflicting_observability, misleading_evidence]
+  difficulty: L4
+  provenance: synthetic
+  inspired_by: Postmortems where NTP drift misordered logs; OOM after model/data reload
+ground_truth:
+  root_cause:
+    statement: After the 09:30 hot-reload of fraud model v7 (2.4x larger), fraud-svc memory climbed until the container was OOMKilled at 10:02:08 (k8s clock). payments-svc fraud-check failures followed the kill; they did not cause it.
+    fault_type: memory_exhaustion_after_model_reload
+    entity: fraud-svc (model fraud-gbm v7, 2048Mi limit)
+    aliases: [fraud-svc OOMKilled, model v7 memory growth, fraud model reload exceeds memory limit]
+  contributing_factors:
+  - statement: Node ip-10-0-1-44 clock is ~182s fast (chrony unsynchronised since 06-16), so fraud-svc log timestamps are ~3 minutes ahead and misorder events.
+    must_mention: true
+  - statement: Memory will hit the limit again (~10:35) because v7 is still loaded.
+    must_mention: true
+  - statement: Client retries briefly raised fraud-svc load after restart (secondary, not causal).
+  propagation_chain: ['09:30 model v7 loaded', memory grows 1.1GiB -> 2.0GiB, '10:02:08 OOMKilled (exit 137)', 'payments fraud checks fail 10:02:09-10:02:45', retries raise load after restart]
+  red_herrings:
+  - claim: payments-svc retry storm crashed fraud-svc.
+    why_wrong: The authoritative k8s OOMKilled event (10:02:08) precedes the first payments error (10:02:09); fraud-svc's "10:05" logs are skewed by +182s. Memory was rising steadily since the 09:30 reload, before any payment errors.
+    disproved_by: [ev_k8s_events, ev_clock_offset, ev_memory]
+  key_evidence:
+  - id: ev_k8s_events
+    tool: get_infra_events
+    description: OOMKilled at 10:02:08 by control-plane clock
+  - id: ev_clock_offset
+    tool: query_metrics
+    args:
+      service: node-ip-10-0-1-44
+    description: node clock offset +182s
+  - id: ev_memory
+    tool: query_metrics
+    args:
+      service: fraud-svc
+    description: memory climbing since 09:30 toward 2048Mi
+  - id: ev_changes
+    tool: get_changes
+    description: model v7 hot-reload at 09:30, 1.9GB vs 0.8GB
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: fraud-svc
+    description: exit code 137 restart; skewed timestamps
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Roll fraud-svc back to model v6 (or raise the memory limit) before the next OOM (~10:35).
+    rationale: Memory is climbing again; another crash is imminent.
+  - rank: 2
+    category: fix
+    action: Fix NTP/chrony on ip-10-0-1-44 and alert on node clock offset > 1s.
+    rationale: Skewed logs misled the investigation and will again.
+  - rank: 3
+    category: prevent
+    action: Add a memory-budget check to the model release pipeline (load test v-next under the production limit).
+    rationale: Catches model size regressions before hot-reload.
+  - rank: 4
+    category: prevent
+    action: Use exponential backoff with jitter and a retry budget for fraud checks.
+    rationale: Secondary hardening; retries were amplifying, not causal.
+  - rank: 5
+    category: detect
+    action: Order cross-service timelines by collector/ingest time or k8s events rather than host-stamped log time.
+    rationale: Makes causality analysis robust to drift.
+  must_not: [Conclude that payments retries caused the fraud-svc crash.]

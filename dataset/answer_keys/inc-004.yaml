@@ -1,0 +1,77 @@
+id: inc-004
+metadata:
+  id: inc-004
+  title: Reporter blames an ISP/network outage; real cause is a DB pool misconfiguration
+  primary_tag: misleading_evidence
+  tags: [misleading_evidence]
+  difficulty: L2
+  provenance: synthetic
+  inspired_by: Connection-pool exhaustion postmortems; anchoring on a reporter's hypothesis
+ground_truth:
+  root_cause:
+    statement: A config change at 11:40 (PR
+    fault_type: config_error_resource_exhaustion
+    entity: auth-svc DB connection pool (AUTH_DB_POOL_MAX)
+    aliases: [AUTH_DB_POOL_MAX=5, Hikari pool size misconfiguration, 'PR #874']
+  contributing_factors:
+  - statement: Config values are not range-checked/reviewed against the PR's stated intent.
+  - statement: Change shipped 20 minutes before the daily peak; no pool-saturation alert.
+    must_mention: true
+  propagation_chain: ['11:40 pool max 50 -> 5', traffic ramps to ~220 rps, pending threads > 140, logins time out at 30s]
+  red_herrings:
+  - claim: ISP/Cloudflare network outage.
+    why_wrong: Packet loss is flat, the Cloudflare degradation is in São Paulo while affected users are in Europe, and catalog browsing over the same path is healthy.
+    disproved_by: [ev_network, ev_cf_status, ev_catalog_ok]
+  - claim: users-db is overloaded.
+    why_wrong: DB CPU dropped after the change; auth-svc only opens 5 connections.
+    disproved_by: [ev_pool_metrics]
+  key_evidence:
+  - id: ev_pool_metrics
+    tool: query_metrics
+    args:
+      service: auth-svc
+    description: active connections pinned at 5, pending threads ~150
+  - id: ev_logs
+    tool: search_logs
+    args:
+      service: auth-svc
+    description: Hikari timeout logs and startup with maximumPoolSize=5
+  - id: ev_changes
+    tool: get_changes
+    description: 'PR #874 changed AUTH_DB_POOL_MAX 50 -> 5 at 11:40'
+  - id: ev_network
+    tool: query_metrics
+    args:
+      service: cdn-edge
+    description: packet loss flat
+  - id: ev_cf_status
+    tool: get_external_report
+    args:
+      name: cloudflare_status
+    description: degradation limited to GRU
+    required: false
+  - id: ev_catalog_ok
+    tool: query_metrics
+    args:
+      service: catalog-svc
+    description: other services healthy
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Revert AUTH_DB_POOL_MAX to 50 and restart auth-svc.
+    rationale: Restores connection capacity for peak load.
+  - rank: 2
+    category: mitigate
+    action: 'Correct the customer-facing message: not an ISP/Cloudflare outage; login issue identified and being fixed.'
+    rationale: The proposed status update would be wrong.
+  - rank: 3
+    category: prevent
+    action: Add schema/range validation for pool settings in CI and require the diff to match the PR intent.
+    rationale: Catches 10x drops in critical limits.
+  - rank: 4
+    category: detect
+    action: Alert on Hikari pending threads / connection wait time.
+    rationale: Saturation was visible 15 minutes before tickets.
+  must_not: [Confirm an ISP or Cloudflare outage as the cause.]

@@ -1,0 +1,161 @@
+id: inc-007
+incident_report:
+  reported_at: 2026-05-27 09:20:00+00:00
+  reporter: head of support
+  severity: SEV2
+  title: Card payments failing with 'Payment method could not be verified'
+  description: |
+    Since early morning customers can't pay by card ("Payment method could not be verified").
+    UPI and wallets work. Status dashboard shows everything healthy and there are no 5xx alerts.
+    The new card form went out this morning - could it be that?
+environment:
+  window:
+    start: 2026-05-27 06:30:00+00:00
+    end: 2026-05-27 09:40:00+00:00
+  topology:
+    services:
+    - name: web-frontend
+      kind: web
+      depends_on: [payments-svc]
+    - name: payments-svc
+      kind: service
+      depends_on: [psp-gateway, vault]
+      notes: Calls the PSP for card authorization; UPI/wallet via a separate provider. Health check GET /healthz.
+    - name: psp-gateway
+      kind: external
+      notes: card payment service provider
+    - name: vault
+      kind: secrets_manager
+  metrics:
+  - service: payments-svc
+    name: card_auth_success_rate
+    unit: ratio
+    start: 2026-05-27 06:30:00+00:00
+    step_seconds: 600
+    values: [0.97, 0.97, 0.96, 0.55, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.25, 0.25]
+  - service: payments-svc
+    name: upi_wallet_success_rate
+    unit: ratio
+    start: 2026-05-27 06:30:00+00:00
+    step_seconds: 600
+    values: [0.98, 0.98, 0.98, 0.98, 0.98, 0.97, 0.98, 0.98, 0.98, 0.98, 0.97, 0.98, 0.98, 0.98, 0.98, 0.97, 0.98, 0.98, 0.98]
+  - service: payments-svc
+    name: http_5xx_rate
+    unit: percent
+    start: 2026-05-27 06:30:00+00:00
+    step_seconds: 600
+    values: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  - service: payments-svc
+    name: http_4xx_rate
+    unit: percent
+    start: 2026-05-27 06:30:00+00:00
+    step_seconds: 600
+    values: [1.2, 1.3, 1.2, 18.0, 31.5, 32.0, 31.8, 32.1, 31.9, 32.2, 31.7, 32.0, 31.8, 32.1, 31.9, 32.0, 31.8, 24.1, 24.0]
+  - service: payments-svc
+    name: healthz_success
+    unit: percent
+    start: 2026-05-27 06:30:00+00:00
+    step_seconds: 600
+    values: [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100]
+  - service: payments-svc
+    name: replicas
+    unit: count
+    start: 2026-05-27 06:30:00+00:00
+    step_seconds: 600
+    values: [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 4]
+  logs:
+  - ts: 2026-05-27 06:45:30+00:00
+    service: web-frontend
+    level: INFO
+    message: web-frontend v8.2.0 deployed (card form restyle)
+  - ts: 2026-05-27 07:00:41+00:00
+    service: payments-svc
+    level: WARN
+    message: 'psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED'
+    attrs:
+      pod: payments-svc-7d9-a
+  - ts: 2026-05-27 07:02:13+00:00
+    service: payments-svc
+    level: WARN
+    message: 'psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED'
+    attrs:
+      pod: payments-svc-7d9-b
+  - ts: 2026-05-27 09:08:20+00:00
+    service: payments-svc
+    level: INFO
+    message: loaded PSP credentials from vault (key_id=pk_live_..C2)
+    attrs:
+      pod: payments-svc-7d9-n
+  - ts: 2026-05-27 09:10:05+00:00
+    service: payments-svc
+    level: INFO
+    message: psp authorize ok
+    attrs:
+      pod: payments-svc-7d9-n
+  - ts: 2026-05-27 09:10:09+00:00
+    service: payments-svc
+    level: WARN
+    message: 'psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED'
+    attrs:
+      pod: payments-svc-7d9-c
+  traces:
+  - trace_id: t-c07-fail-1
+    start: 2026-05-27 07:30:00+00:00
+    duration_ms: 220
+    status: ok
+    spans:
+    - service: web-frontend
+      operation: POST /pay
+      duration_ms: 220
+      status: ok
+      attrs:
+        http_status: 402
+    - service: payments-svc
+      operation: psp.authorize
+      duration_ms: 190
+      status: ok
+      attrs:
+        psp_status: 401
+        mapped: PAYMENT_METHOD_UNVERIFIED
+  changes:
+  - ts: 2026-05-25 10:00:00+00:00
+    kind: config
+    service: vault
+    summary: 'rotate-psp-keys job: set revoke_previous_immediately=true (security hardening)'
+    author: security-team
+  - ts: 2026-05-27 06:45:00+00:00
+    kind: deploy
+    service: web-frontend
+    summary: web-frontend v8.2.0 (card form restyle)
+    author: web-team
+  - ts: 2026-05-27 06:58:00+00:00
+    kind: secret
+    service: vault
+    summary: 'rotate-psp-keys: new key pk_live_..C2 created; previous key pk_live_..A7 revoked at PSP (07:00:30)'
+    author: cron
+  infra_events:
+  - ts: 2026-05-27 09:08:00+00:00
+    source: kubernetes
+    entity: hpa/payments-svc
+    reason: SuccessfulRescale
+    message: 'New size: 4; reason: cpu resource utilization above target'
+  alerts:
+  - ts: 2026-05-27 07:04:00+00:00
+    name: SyntheticCardCheckoutFailing
+    severity: warning
+    entity: synthetic/card-checkout
+    state: firing
+    summary: Synthetic card checkout journey failing (routed to email only)
+  external_reports:
+  - name: psp_status_page
+    kind: vendor_status_page
+    generated_at: 2026-05-27 09:00:00+00:00
+    body: All systems operational. No incidents reported today.
+  past_incidents:
+  - id: PIR-2026-015
+    date: '2026-03-21T00:00:00Z'
+    title: Card payments failing - PSP outage
+    summary: Card authorizations failed for 70 minutes; PSP status page reported an incident.
+    root_cause: Payment provider outage.
+    resolution: Waited for provider recovery; added PSP status to dashboard.
+tool_faults: []

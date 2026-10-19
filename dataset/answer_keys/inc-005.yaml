@@ -1,0 +1,71 @@
+id: inc-005
+metadata:
+  id: inc-005
+  title: Global dashboards green while one node's degraded disk fails requests
+  primary_tag: conflicting_observability
+  tags: [conflicting_observability]
+  difficulty: L3
+  provenance: synthetic
+  inspired_by: Gray-failure postmortems (single degraded host hidden by fleet averages and shallow readiness probes)
+ground_truth:
+  root_cause:
+    statement: The EBS volume behind node ip-10-0-3-17 (eu-west-1c) degraded at ~10:12 (io await 2ms -> ~190ms), so the 3 inventory-svc pods on that node read their local RocksDB cache slowly and checkout requests routed to them time out.
+    fault_type: degraded_infrastructure_gray_failure
+    entity: node ip-10-0-3-17 / EBS vol-0ab3f9c1
+    aliases: [degraded EBS volume, bad node ip-10-0-3-17, eu-west-1c node disk latency]
+  contributing_factors:
+  - statement: Readiness probe (/ping) doesn't exercise the disk, so unhealthy pods keep receiving traffic.
+    must_mention: true
+  - statement: Alerting uses fleet-wide averages/global error rate (threshold 2%), masking a 1-node failure.
+    must_mention: true
+  propagation_chain: [EBS volume degraded on ip-10-0-3-17, RocksDB reads on 3 of 18 inventory pods take ~4s, checkout reserve calls to those pods time out (3s), ~1.2% of checkouts fail; repeated failures for unlucky users]
+  red_herrings:
+  - claim: Nothing is wrong / user-side issue because dashboards are green.
+    why_wrong: Per-AZ and per-node breakdown shows p99 ~4.1-4.7s in eu-west-1c, and AWS reported a degraded volume.
+    disproved_by: [ev_az_breakdown, ev_aws_health]
+  - claim: inventory-svc code regression.
+    why_wrong: No changes in window; only pods on one node are slow.
+    disproved_by: [ev_changes, ev_node_metrics]
+  key_evidence:
+  - id: ev_az_breakdown
+    tool: query_metrics
+    args:
+      service: inventory-svc
+    description: p99 by AZ/node isolates eu-west-1c / ip-10-0-3-17
+  - id: ev_node_metrics
+    tool: query_metrics
+    args:
+      service: node-ip-10-0-3-17
+    description: disk io await ~190ms
+  - id: ev_traces
+    tool: get_traces
+    description: slow spans all on pods scheduled to ip-10-0-3-17
+  - id: ev_aws_health
+    tool: get_external_report
+    args:
+      name: aws_health_dashboard
+    description: AWS confirms degraded EBS volume
+    required: false
+  - id: ev_changes
+    tool: get_changes
+    description: no deploys/config changes in window
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Cordon and drain ip-10-0-3-17 so inventory pods reschedule onto healthy nodes; replace the volume/instance.
+    rationale: Removes the degraded disk from the request path.
+  - rank: 2
+    category: prevent
+    action: Make readiness reflect local-cache read latency (or use mesh outlier detection to eject slow endpoints).
+    rationale: Unhealthy pods should stop receiving traffic automatically.
+  - rank: 3
+    category: detect
+    action: Alert on per-AZ/per-pod p99 and on node disk await; subscribe to AWS Health events.
+    rationale: Global averages hid the failure.
+  - rank: 4
+    category: prevent
+    action: Add checkout retry to a different inventory pod on timeout.
+    rationale: Reduces user-visible impact from single-pod failures.
+  must_not: [Conclude there is no incident because global metrics are under threshold.]

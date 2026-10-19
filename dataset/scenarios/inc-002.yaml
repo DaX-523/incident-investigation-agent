@@ -1,0 +1,182 @@
+id: inc-002
+incident_report:
+  reported_at: 2026-08-03 09:30:00+00:00
+  reporter: checkout team lead (Slack
+  severity: SEV1
+  title: Checkout fully down right after this morning's checkout deploy
+  description: |
+    We shipped checkout-svc v3.8.1 at 09:08 and almost all checkouts started failing
+    a few minutes later. On-call already rolled back but it still looks broken; maybe
+    the rollback didn't take? Need root cause and next steps.
+environment:
+  window:
+    start: 2026-08-03 08:40:00+00:00
+    end: 2026-08-03 09:50:00+00:00
+  topology:
+    services:
+    - name: api-gateway
+      kind: gateway
+      depends_on: [checkout-svc]
+    - name: checkout-svc
+      kind: service
+      depends_on: [payments-svc, orders-db]
+    - name: payments-svc
+      kind: service
+      depends_on: [psp-gateway]
+      notes: Requires mTLS from callers; server cert issued by cert-manager (issuer internal-ca)
+    - name: psp-gateway
+      kind: external
+    - name: orders-db
+      kind: postgres
+    - name: cert-manager
+      kind: platform
+      notes: Issues internal mTLS certificates
+  metrics:
+  - service: checkout-svc
+    name: http_5xx_rate
+    unit: percent
+    start: 2026-08-03 08:40:00+00:00
+    step_seconds: 300
+    values: [0.2, 0.3, 0.2, 0.2, 0.3, 0.2, 0.3, 94.1, 95.0, 94.7, 95.2, 94.8, 95.1, 94.9]
+  - service: checkout-svc
+    name: http_5xx_rate
+    unit: percent
+    labels:
+      version: v3.8.0
+    start: 2026-08-03 08:40:00+00:00
+    step_seconds: 300
+    values: [0.2, 0.3, 0.2, 0.2, 0.3, 0.2, 0.3, 94.0, 95.3, 94.6, 95.2, 94.8, 95.1, 94.9]
+  - service: checkout-svc
+    name: http_5xx_rate
+    unit: percent
+    labels:
+      version: v3.8.1
+    start: 2026-08-03 09:10:00+00:00
+    step_seconds: 300
+    values: [0.3, 94.2, 94.8, 94.9]
+  - service: payments-svc
+    name: inbound_tls_handshake_failures
+    unit: per_min
+    start: 2026-08-03 08:40:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 1830, 1912, 1876, 1901, 1888, 1895, 1870]
+  logs:
+  - ts: 2026-08-03 09:09:30+00:00
+    service: checkout-svc
+    level: INFO
+    message: Starting checkout-svc v3.8.1
+    attrs:
+      pod: checkout-svc-58f-a
+  - ts: 2026-08-03 09:12:10+00:00
+    service: checkout-svc
+    level: INFO
+    message: POST /checkout 200 in 340ms
+    attrs:
+      version: v3.8.1
+  - ts: 2026-08-03 09:14:02+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'payment authorize failed: rpc error: code = Unavailable desc = connection error: transport: authentication handshake failed: x509: certificate has expired or is not yet valid: current time 2026-08-03T09:14:02Z is after 2026-08-03T09:14:00Z'
+    attrs:
+      version: v3.8.0
+      pod: checkout-svc-41c-d
+  - ts: 2026-08-03 09:14:05+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'payment authorize failed: rpc error: code = Unavailable desc = connection error: transport: authentication handshake failed: x509: certificate has expired or is not yet valid'
+    attrs:
+      version: v3.8.1
+      pod: checkout-svc-58f-a
+  - ts: 2026-08-03 09:14:06+00:00
+    service: payments-svc
+    level: WARN
+    message: 'tls: client offered only unsupported/expired chain; handshake aborted (peer=checkout-svc)'
+  - ts: 2026-08-03 09:23:40+00:00
+    service: checkout-svc
+    level: INFO
+    message: Starting checkout-svc v3.8.0 (rollback)
+    attrs:
+      pod: checkout-svc-41c-q
+  - ts: 2026-08-03 09:24:15+00:00
+    service: checkout-svc
+    level: ERROR
+    message: 'payment authorize failed: ... x509: certificate has expired or is not yet valid'
+    attrs:
+      version: v3.8.0
+      pod: checkout-svc-41c-q
+  traces:
+  - trace_id: t-c02-fail-1
+    start: 2026-08-03 09:24:15+00:00
+    duration_ms: 9
+    status: error
+    spans:
+    - service: api-gateway
+      operation: POST /checkout
+      duration_ms: 9
+      status: error
+    - service: checkout-svc
+      operation: payments.Authorize (grpc)
+      duration_ms: 4
+      status: error
+      attrs:
+        error: 'x509: certificate has expired'
+        version: v3.8.0
+  changes:
+  - ts: 2026-07-28 15:02:00+00:00
+    kind: infra
+    service: cert-manager
+    summary: 'Tighten cert-manager ClusterRole to least privilege (PR #2231)'
+    author: platform-team
+    details: Removed get/list on issuers.cert-manager.io for namespaces outside cert-manager.
+  - ts: 2026-08-03 09:08:00+00:00
+    kind: deploy
+    service: checkout-svc
+    summary: checkout-svc v3.8.0 -> v3.8.1 (order confirmation email copy change)
+    author: checkout-team
+    details: Only templates/email/order_confirmation.html changed. Rollout complete 09:12.
+  - ts: 2026-08-03 09:22:00+00:00
+    kind: rollback
+    service: checkout-svc
+    summary: checkout-svc v3.8.1 -> v3.8.0 (on-call rollback)
+    author: oncall
+  infra_events:
+  - ts: 2026-07-31 09:14:00+00:00
+    source: cert-manager
+    entity: Certificate/payments-svc-mtls
+    reason: IssuingFailed
+    message: 'issuers.cert-manager.io "internal-ca" is forbidden: User "system:serviceaccount:cert-manager:cert-manager" cannot get resource "issuers" in namespace "payments"'
+  - ts: 2026-08-02 09:14:00+00:00
+    source: cert-manager
+    entity: Certificate/payments-svc-mtls
+    reason: IssuingFailed
+    message: same as above; retry backoff 24h; certificate notAfter=2026-08-03T09:14:00Z, renewBefore=72h
+  - ts: 2026-08-03 09:14:00+00:00
+    source: cert-manager
+    entity: Certificate/payments-svc-mtls
+    reason: Expired
+    message: Certificate has expired (notAfter 2026-08-03T09:14:00Z)
+  alerts:
+  - ts: 2026-08-03 09:17:00+00:00
+    name: CheckoutErrorRateHigh
+    severity: critical
+    entity: checkout-svc
+    state: firing
+    summary: 5xx rate 94% > 2%
+  runbooks:
+  - id: rb-checkout-errors
+    title: Checkout errors after a deploy
+    body: If checkout errors start within 15 minutes of a checkout deploy, roll back first and investigate later.
+  past_incidents:
+  - id: PIR-2026-018
+    date: '2026-04-02T00:00:00Z'
+    title: Checkout outage after deploy
+    summary: Checkout failed right after checkout-svc v3.4.0; rollback restored service within 10 minutes.
+    root_cause: Bad config bundled with v3.4.0.
+    resolution: Rollback; config validation added.
+  - id: PIR-2025-112
+    date: '2025-11-20T00:00:00Z'
+    title: Expired public TLS certificate on api domain
+    summary: Public api certificate expired; mobile clients failed TLS for 40 minutes.
+    root_cause: Manual certificate renewal missed.
+    resolution: Moved public certs to cert-manager; added expiry alerts for public endpoints.
+tool_faults: []

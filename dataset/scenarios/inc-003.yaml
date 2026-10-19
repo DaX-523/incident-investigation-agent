@@ -1,0 +1,192 @@
+id: inc-003
+incident_report:
+  reported_at: 2026-09-02 19:20:00+00:00
+  reporter: on-call SRE (PagerDuty)
+  severity: SEV1
+  title: API gateway p99 latency and 504s spiking
+  description: |
+    GatewayP99High and Gateway5xxHigh fired at 19:12/19:14. Product pages time out for
+    a large share of users. Gateway pods look fine on CPU. Should we scale the gateway?
+environment:
+  window:
+    start: 2026-09-02 18:00:00+00:00
+    end: 2026-09-02 19:40:00+00:00
+  topology:
+    services:
+    - name: api-gateway
+      kind: gateway
+      depends_on: [catalog-svc]
+    - name: catalog-svc
+      kind: service
+      depends_on: [redis-cache, catalog-db]
+    - name: redis-cache
+      kind: redis
+      notes: maxmemory 8gb, policy allkeys-lru
+    - name: catalog-db
+      kind: postgres
+  metrics:
+  - service: api-gateway
+    name: latency_p99
+    unit: ms
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [140, 138, 142, 139, 141, 140, 139, 143, 141, 140, 142, 144, 145, 610, 5000, 5000, 5000, 5000, 5000, 5000]
+  - service: api-gateway
+    name: http_504_rate
+    unit: percent
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1.2, 12.4, 31.0, 33.5, 34.1, 33.8, 34.0]
+  - service: api-gateway
+    name: cpu_utilization
+    unit: percent
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [31, 30, 32, 31, 30, 31, 32, 31, 30, 31, 32, 31, 30, 29, 27, 26, 26, 27, 26, 26]
+  - service: catalog-svc
+    name: latency_p99
+    unit: ms
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [85, 84, 86, 85, 84, 86, 88, 92, 95, 97, 99, 102, 106, 900, 4200, 5000, 5000, 5000, 5000, 5000]
+  - service: redis-cache
+    name: used_memory_pct_of_maxmemory
+    unit: percent
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [61, 61, 62, 61, 62, 62, 63, 68, 74, 80, 86, 91, 96, 100, 100, 100, 100, 100, 100, 100]
+  - service: redis-cache
+    name: evicted_keys_per_sec
+    unit: keys/s
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1200, 4800, 5100, 5050, 4990, 5120, 5080]
+  - service: redis-cache
+    name: hit_ratio
+    unit: ratio
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [0.96, 0.96, 0.96, 0.96, 0.96, 0.96, 0.95, 0.95, 0.95, 0.95, 0.95, 0.95, 0.94, 0.71, 0.43, 0.41, 0.4, 0.41, 0.4, 0.4]
+  - service: redis-cache
+    name: avg_value_size_bytes
+    unit: bytes
+    labels:
+      keyspace: product:pdp:*
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [4100, 4120, 4090, 4110, 4100, 4105, 4300, 12800, 21500, 29800, 35100, 37600, 38200, 38400, 38300, 38500, 38400, 38300, 38400, 38500]
+  - service: catalog-db
+    name: cpu_utilization
+    unit: percent
+    start: 2026-09-02 18:00:00+00:00
+    step_seconds: 300
+    values: [38, 37, 39, 38, 38, 39, 40, 41, 42, 42, 43, 44, 45, 72, 97, 98, 98, 99, 98, 98]
+  logs:
+  - ts: 2026-09-02 19:05:12+00:00
+    service: redis-cache
+    level: WARN
+    message: maxmemory reached (8gb); evicting keys with allkeys-lru
+  - ts: 2026-09-02 19:06:40+00:00
+    service: catalog-svc
+    level: WARN
+    message: cache miss product:pdp:88123 -> loading from catalog-db (with reviews)
+  - ts: 2026-09-02 19:09:02+00:00
+    service: catalog-db
+    level: WARN
+    message: 'duration: 1840 ms statement: SELECT r.* FROM product_reviews r WHERE r.product_id = $1 ORDER BY r.created_at DESC'
+  - ts: 2026-09-02 19:10:15+00:00
+    service: catalog-svc
+    level: ERROR
+    message: db pool wait exceeded 2000ms (pool=40, waiting=312)
+  - ts: 2026-09-02 19:11:50+00:00
+    service: api-gateway
+    level: ERROR
+    message: 'upstream timed out (110: Connection timed out) while reading response header from upstream, upstream: catalog-svc'
+  traces:
+  - trace_id: t-c03-slow-1
+    start: 2026-09-02 19:15:20+00:00
+    duration_ms: 5000
+    status: error
+    spans:
+    - service: api-gateway
+      operation: GET /products/{id}
+      duration_ms: 5000
+      status: error
+      attrs:
+        error: upstream timeout
+    - service: catalog-svc
+      operation: getProductPage
+      duration_ms: 4990
+      status: error
+    - service: redis-cache
+      operation: GET product:pdp:77410
+      duration_ms: 1
+      status: ok
+      attrs:
+        hit: false
+    - service: catalog-db
+      operation: SELECT product_reviews
+      duration_ms: 4600
+      status: ok
+  - trace_id: t-c03-ok-1
+    start: 2026-09-02 18:20:00+00:00
+    duration_ms: 42
+    status: ok
+    spans:
+    - service: api-gateway
+      operation: GET /products/{id}
+      duration_ms: 42
+      status: ok
+    - service: catalog-svc
+      operation: getProductPage
+      duration_ms: 35
+      status: ok
+    - service: redis-cache
+      operation: GET product:pdp:10021
+      duration_ms: 1
+      status: ok
+      attrs:
+        hit: true
+  changes:
+  - ts: 2026-09-02 17:50:00+00:00
+    kind: config
+    service: api-gateway
+    summary: TLS cipher suite list updated (remove CBC ciphers)
+    author: security-team
+  - ts: 2026-09-02 18:30:00+00:00
+    kind: feature_flag
+    service: catalog-svc
+    summary: 'pdp_cache_include_reviews: 0% -> 100%'
+    author: growth-team
+    details: Product page cache entries now embed the latest 200 reviews to speed up PDP rendering.
+  alerts:
+  - ts: 2026-09-02 19:12:00+00:00
+    name: GatewayP99High
+    severity: critical
+    entity: api-gateway
+    state: firing
+    summary: p99 > 1s
+  - ts: 2026-09-02 19:13:00+00:00
+    name: CatalogDBCPUHigh
+    severity: warning
+    entity: catalog-db
+    state: firing
+    summary: CPU > 90%
+  - ts: 2026-09-02 19:14:00+00:00
+    name: Gateway5xxHigh
+    severity: critical
+    entity: api-gateway
+    state: firing
+    summary: 504 rate > 5%
+  runbooks:
+  - id: rb-gateway-latency
+    title: Gateway latency high
+    body: Check gateway CPU and replica count; scale out with `kubectl scale deploy/api-gateway --replicas=N` if CPU > 70%.
+  past_incidents:
+  - id: PIR-2026-044
+    date: '2026-06-14T00:00:00Z'
+    title: Gateway 504s during summer sale
+    summary: API gateway CPU saturated at 95% during a sale; 504s for 15 minutes.
+    root_cause: Gateway under-provisioned for sale traffic.
+    resolution: Scaled gateway from 6 to 12 replicas.
+tool_faults: []
