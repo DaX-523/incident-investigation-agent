@@ -14,7 +14,7 @@ from typing import Annotated, Any, Callable, Literal, Protocol
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from typing_extensions import TypedDict
 
 from dataset.schema import Scenario
@@ -74,11 +74,21 @@ class BaselineSubmission(_M):
     summary: str
     root_cause: str | None = None
     confidence: Confidence
-    hypotheses: list[BaselineHypothesis]
+    hypotheses: list[BaselineHypothesis] = Field(min_length=1)
     corrective_actions: list[BaselineAction] = []
     missing_data: list[str] = []
     security_findings: list[str] = []
     questions_for_human: list[str] = []
+
+    @model_validator(mode="after")
+    def _conclusive_needs_supported_top(self) -> BaselineSubmission:
+        # Same bar the multi-agent evidence gate enforces before its report step.
+        if self.outcome == "conclusive":
+            top = min(self.hypotheses, key=lambda h: h.rank)
+            if top.status != "supported" or not top.supporting:
+                raise ValueError("a conclusive report needs its rank-1 hypothesis marked supported, "
+                                 "with at least one supporting fact citing call_ids")
+        return self
 
 
 SUBMIT_DEF = {

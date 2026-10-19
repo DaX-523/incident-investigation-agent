@@ -138,6 +138,23 @@ def test_invalid_submission_is_sent_back_for_correction():
     assert r.state["submission"] is not None and r.report.outcome == "conclusive"
 
 
+@pytest.mark.parametrize("bad", [
+    {"hypotheses": []},
+    {"hypotheses": [{"rank": 1, "statement": "bad deploy", "status": "supported", "confidence": "high"}]},
+])
+def test_conclusive_submission_without_supported_hypothesis_is_sent_back(bad):
+    def fn(messages, turn):
+        if turn == 1:
+            return ai(tool_calls=[{"name": "get_alerts", "args": {}}])
+        if turn == 2:
+            return ai(tool_calls=[{"name": "submit_report", "args": {**submission(seen_calls(messages)), **bad}}])
+        return ai(tool_calls=[{"name": "submit_report", "args": submission(seen_calls(messages))}])
+
+    r = run(Scripted(fn))
+    errors = [m for m in r.state["messages"] if isinstance(m, ToolMessage) and m.status == "error"]
+    assert len(errors) == 1 and r.report.outcome == "conclusive" and r.report.hypotheses
+
+
 def test_wall_clock_limit():
     ticks = iter(range(0, 100_000, 50))
 
