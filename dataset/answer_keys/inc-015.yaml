@@ -1,0 +1,81 @@
+id: inc-015
+metadata:
+  id: inc-015
+  title: HTTP client upgrade takes the blame for cluster DNS losing two of three replicas
+  primary_tag: premature_closure
+  tags: [premature_closure, misleading_evidence]
+  difficulty: L3
+  provenance: synthetic
+  inspired_by: Kubernetes postmortems where a node drain evicts co-located CoreDNS replicas and DNS timeouts surface as connect timeouts in the most latency-sensitive caller
+ground_truth:
+  root_cause:
+    statement: A managed node-group auto-upgrade drained node ip-10-2-4-11 at 02:05, evicting 2 of the 3 CoreDNS replicas, whose replacements stayed Pending (insufficient CPU). The single remaining CoreDNS pod saturated (p99 ~4.9s), so order-svc DNS lookups for payments-svc timed out inside its 2000ms connect budget.
+    fault_type: cluster_dns_capacity_loss
+    entity: coredns replicas evicted by node drain
+    aliases:
+    - CoreDNS replicas evicted by the node drain
+    - cluster DNS lost two of three CoreDNS replicas
+    - DNS lookup timeouts from saturated CoreDNS
+    - coredns capacity loss during node group upgrade
+  contributing_factors:
+  - statement: Two CoreDNS replicas ran on the same node with no anti-affinity or PodDisruptionBudget, so one drain removed most DNS capacity.
+    must_mention: true
+  - statement: order-svc 7.3.1's new HTTP client keeps fewer idle connections (5), so it opens ~10x more new connections and does more DNS lookups, which raised its exposure.
+    must_mention: false
+  - statement: order-svc's 2000ms connect timeout with no retry is shorter than the DNS delay, unlike cart-svc (5000ms plus one retry).
+    must_mention: false
+  propagation_chain:
+  - EKS auto-upgrade drains ip-10-2-4-11 at 02:05
+  - 2 of 3 CoreDNS pods evicted; replacements Pending on insufficient CPU
+  - remaining CoreDNS pod saturates, DNS p99 ~4.9s
+  - order-svc DNS lookups for payments-svc exceed the 2000ms connect timeout
+  - ~8% of order placements fail; cart-svc sees DNS retries and ~1.7% errors
+  red_herrings:
+  - claim: order-svc 7.3.1 (new HTTP client and connection pool) is the root cause, so rolling back fixes it.
+    why_wrong: Failing traces spend the full 2000ms in dns.lookup and never reach payments-svc; cart-svc, which was not deployed, logs DNS EAI_AGAIN errors at the same time; CoreDNS dropped to 1 ready replica at 02:05. The new client only increases how often order-svc hits the broken resolver.
+    disproved_by: [ev_traces, ev_dns_events, ev_coredns_metrics]
+  - claim: payments-svc is failing.
+    why_wrong: payments-svc latency and error rate are flat.
+    disproved_by: [ev_payments_metrics]
+  key_evidence:
+  - id: ev_traces
+    tool: get_traces
+    description: failing requests time out in dns.lookup (2000ms) with no payments-svc span
+  - id: ev_dns_events
+    tool: get_infra_events
+    description: node drain at 02:05 evicts two CoreDNS pods; replacements Pending (insufficient cpu)
+  - id: ev_coredns_metrics
+    tool: query_metrics
+    args:
+      service: coredns
+    description: ready replicas 3 -> 1 and DNS p99 ~4.9s from 02:05
+  - id: ev_payments_metrics
+    tool: query_metrics
+    args:
+      service: payments-svc
+    description: payments-svc healthy throughout
+    required: false
+  - id: ev_cart_dns_log
+    tool: search_logs
+    description: cart-svc EAI_AGAIN DNS errors at the same time
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Restore CoreDNS capacity now (free CPU or schedule the Pending replicas on the system node group, or scale CoreDNS) and pause the node-group upgrade.
+    rationale: DNS capacity is what failed; rolling back order-svc would not restore it.
+  - rank: 2
+    category: fix
+    action: Add pod anti-affinity, a PodDisruptionBudget and a priority class for CoreDNS so a single drain cannot remove most replicas.
+    rationale: Two replicas sharing a node turned one drain into a DNS outage.
+  - rank: 3
+    category: prevent
+    action: Roll out NodeLocal DNSCache and give order-svc a connect retry; review the new client's idle-connection setting.
+    rationale: Reduces how much each caller depends on cluster DNS latency.
+  - rank: 4
+    category: detect
+    action: Alert on CoreDNS ready replicas and DNS latency, and on node-group upgrades that leave pods Pending.
+    rationale: DNS degraded with no alert; only the downstream error rate paged.
+  must_not:
+  - Conclude that the order-svc 7.3.1 HTTP client change is the root cause.

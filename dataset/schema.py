@@ -49,6 +49,9 @@ Tag = Literal[
     "multi_cause",
     "prompt_injection",
     "real_incident",
+    # A plausible, self-consistent explanation sits in the first sources an investigator checks;
+    # the evidence that overturns it is only in sources checked later (traces, infra events, ...).
+    "premature_closure",
 ]
 
 

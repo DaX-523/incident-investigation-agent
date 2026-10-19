@@ -1,0 +1,74 @@
+id: inc-016
+metadata:
+  id: inc-016
+  title: A real but minor pool reduction masks a backfill job saturating the database
+  primary_tag: premature_closure
+  tags: [premature_closure, multi_cause]
+  difficulty: L3
+  provenance: synthetic
+  inspired_by: Postmortems where pool-exhaustion errors are blamed on pool sizing while an ad-hoc batch job has made every query slow
+ground_truth:
+  root_cause:
+    statement: An ad-hoc backfill job (backfill-carrier-events, 16 parallel workers re-importing 2M events) started at 08:50 and saturated tracking-db (write IOPS ~99% of provisioned, row-lock waits), so tracking-api queries went from ~8ms to ~950ms, held connections far longer, and exhausted the pool.
+    fault_type: batch_job_db_saturation
+    entity: backfill-carrier-events job on tracking-db
+    aliases:
+    - backfill-carrier-events job saturated tracking-db
+    - ad-hoc backfill job overloaded the tracking database
+    - carrier events backfill causing lock contention and IOPS saturation
+    - data backfill job saturating tracking-db write IOPS
+  contributing_factors:
+  - statement: The 08:55 pool reduction from 50 to 40 removed headroom, so slow queries exhausted the pool sooner and errors rose further.
+    must_mention: true
+  - statement: The backfill ran in business hours with parallelism 16, against the runbook (01:00-05:00 UTC, parallelism 4 or less).
+    must_mention: false
+  propagation_chain:
+  - backfill-carrier-events starts at 08:50 with 16 workers writing 5000-row batches
+  - tracking-db write IOPS ~99% of provisioned, lock waits ~45/s
+  - tracking-api queries slow from ~8ms to ~950ms
+  - connections held ~100x longer; pool (40 after 08:55) saturates
+  - pool acquire timeouts (2000ms) return 5xx for ~12.5% of partner calls
+  red_herrings:
+  - claim: The 08:55 pool size reduction is the root cause, so reverting it fixes the incident.
+    why_wrong: tracking-db latency, write IOPS and lock waits rose at 08:50, before the pool change; traces show queries themselves taking ~940ms instead of ~7ms; with queries 100x slower, 50 connections would also saturate.
+    disproved_by: [ev_db_metrics, ev_traces, ev_job_events]
+  key_evidence:
+  - id: ev_db_metrics
+    tool: query_metrics
+    args:
+      service: tracking-db
+    description: query p99 9ms -> ~950ms, write IOPS ~9900/10000, lock waits from 08:50
+  - id: ev_traces
+    tool: get_traces
+    description: slow SELECTs (~940ms, Lock:tuple) and backfill batches writing 5000 rows in ~4s
+  - id: ev_job_events
+    tool: get_infra_events
+    description: backfill job created at 08:49:50 with parallelism 16; RDS write IOPS alert at 08:58
+  - id: ev_pool_change
+    tool: get_changes
+    description: pool reduced 50 -> 40 at 08:55
+    required: false
+  - id: ev_runbook
+    tool: search_runbooks
+    description: backfill policy (night window, parallelism 4 or less)
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Pause or throttle backfill-carrier-events (parallelism 4 or less) and resume it in the 01:00-05:00 window.
+    rationale: Removes the load that made every query slow.
+  - rank: 2
+    category: mitigate
+    action: Restore the pool to 50 while the database recovers.
+    rationale: Gives back headroom, but alone it would not fix ~950ms queries.
+  - rank: 3
+    category: prevent
+    action: Require backfills against tracking-db to go through a scheduled, rate-limited job runner that enforces the runbook window and parallelism.
+    rationale: The job bypassed the documented policy.
+  - rank: 4
+    category: detect
+    action: Alert on tracking-db query latency and lock waits, and annotate dashboards with batch job starts.
+    rationale: The database signal led the pool symptom by five minutes.
+  must_not:
+  - Name the DB pool size reduction as the root cause.

@@ -1,0 +1,279 @@
+id: inc-015
+incident_report:
+  reported_at: 2026-09-03 02:40:00+00:00
+  reporter: orders on-call engineer
+  severity: SEV2
+  title: ~8% of order placements failing with connect timeouts to payments
+  description: |
+    Since about 02:08 UTC around 8% of order placements fail with "upstream connect timeout to
+    payments-svc". We deployed order-svc 7.3.1 (migration to the new HTTP client) at 02:00. The
+    payments team says their service is healthy. Should we roll back 7.3.1?
+environment:
+  window:
+    start: 2026-09-03 01:30:00+00:00
+    end: 2026-09-03 03:30:00+00:00
+  topology:
+    services:
+    - name: mobile-gateway
+      kind: service
+      depends_on: [order-svc, cart-svc]
+    - name: order-svc
+      kind: service
+      depends_on: [payments-svc, inventory-svc, orders-db, coredns]
+      notes: 12 pods. Outbound connect timeout 2000ms, no retry on connect failure.
+    - name: cart-svc
+      kind: service
+      depends_on: [inventory-svc, coredns]
+      notes: Outbound timeout 5000ms with one retry.
+    - name: payments-svc
+      kind: service
+      depends_on: [coredns]
+    - name: inventory-svc
+      kind: service
+      depends_on: [coredns]
+    - name: orders-db
+      kind: postgres
+    - name: coredns
+      kind: k8s_cluster_dns
+      notes: Cluster DNS (CoreDNS) deployment, 3 replicas, service IP 10.96.0.10.
+  metrics:
+  - service: order-svc
+    name: error_rate
+    unit: percent
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [0.3, 0.3, 0.2, 0.3, 0.3, 0.2, 0.3, 2.1, 7.6, 8.4, 8.1, 7.9, 8.6, 8.2, 8.0, 8.3, 7.7, 8.1, 8.5, 8.0, 7.8, 8.2, 8.4, 7.9]
+  - service: order-svc
+    name: latency_p99
+    unit: ms
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [440, 452, 438, 446, 450, 441, 455, 1380, 2060, 2080, 2070, 2090, 2060, 2075, 2080, 2070, 2065, 2085, 2070, 2060, 2090, 2075, 2080, 2070]
+  - service: order-svc
+    name: new_connections_per_s
+    unit: count
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [4, 5, 4, 4, 5, 4, 19, 41, 44, 43, 45, 42, 44, 43, 45, 44, 42, 43, 44, 45, 43, 42, 44, 43]
+  - service: payments-svc
+    name: latency_p99
+    unit: ms
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [182, 178, 185, 180, 183, 179, 181, 184, 180, 177, 182, 179, 183, 181, 178, 180, 184, 182, 179, 181, 183, 180, 178, 182]
+  - service: payments-svc
+    name: error_rate
+    unit: percent
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+  - service: cart-svc
+    name: error_rate
+    unit: percent
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.9, 1.7, 1.8, 1.6, 1.9, 1.7, 1.8, 1.6, 1.7, 1.9, 1.8, 1.7, 1.6, 1.8, 1.7, 1.9, 1.8]
+  - service: coredns
+    name: dns_request_latency_p99
+    unit: ms
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [2, 2, 3, 2, 2, 3, 2, 3100, 4800, 4900, 4850, 4900, 4880, 4910, 4870, 4900, 4890, 4920, 4880, 4900, 4910, 4890, 4900, 4880]
+  - service: coredns
+    name: ready_replicas
+    unit: count
+    start: 2026-09-03 01:30:00+00:00
+    step_seconds: 300
+    values: [3, 3, 3, 3, 3, 3, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+  logs:
+  - ts: 2026-09-03 02:00:20+00:00
+    service: order-svc
+    level: INFO
+    message: rollout started for order-svc 7.3.1
+  - ts: 2026-09-03 02:04:05+00:00
+    service: order-svc
+    level: INFO
+    message: 'rollout complete: 12/12 pods on 7.3.1'
+  - ts: 2026-09-03 02:09:12+00:00
+    service: order-svc
+    level: ERROR
+    message: 'POST /orders failed: upstream connect timeout to payments-svc after 2000ms'
+    attrs:
+      version: 7.3.1
+      http_client: okhttp-5.0
+  - ts: 2026-09-03 02:11:40+00:00
+    service: cart-svc
+    level: WARN
+    message: 'getaddrinfo EAI_AGAIN inventory-svc.prod.svc.cluster.local; retrying'
+  - ts: 2026-09-03 02:12:31+00:00
+    service: order-svc
+    level: WARN
+    message: 'connection pool: 0 idle connections to payments-svc, opening new connection'
+    attrs:
+      version: 7.3.1
+      pool_max_idle: 5
+  - ts: 2026-09-03 02:15:02+00:00
+    service: order-svc
+    level: ERROR
+    message: 'POST /orders failed: upstream connect timeout to payments-svc after 2000ms'
+    attrs:
+      version: 7.3.1
+      http_client: okhttp-5.0
+  - ts: 2026-09-03 02:21:47+00:00
+    service: order-svc
+    level: ERROR
+    message: 'POST /orders failed: upstream connect timeout to payments-svc after 2000ms'
+    attrs:
+      version: 7.3.1
+      http_client: okhttp-5.0
+  traces:
+  - trace_id: t-c15-before-1
+    start: 2026-09-03 01:52:10+00:00
+    duration_ms: 236
+    status: ok
+    spans:
+    - service: order-svc
+      operation: POST /orders
+      duration_ms: 236
+      status: ok
+      attrs:
+        version: 7.3.0
+    - service: order-svc
+      operation: http.connect payments-svc
+      duration_ms: 0.2
+      status: ok
+      attrs:
+        reused_connection: true
+    - service: payments-svc
+      operation: POST /charges
+      duration_ms: 171
+      status: ok
+  - trace_id: t-c15-fail-1
+    start: 2026-09-03 02:14:58+00:00
+    duration_ms: 2004
+    status: error
+    spans:
+    - service: order-svc
+      operation: POST /orders
+      duration_ms: 2004
+      status: error
+      attrs:
+        version: 7.3.1
+        error: connect_timeout
+    - service: order-svc
+      operation: dns.lookup payments-svc.prod.svc.cluster.local
+      duration_ms: 2000
+      status: error
+      attrs:
+        resolver: 10.96.0.10
+        error: timeout
+  - trace_id: t-c15-ok-after
+    start: 2026-09-03 02:16:33+00:00
+    duration_ms: 262
+    status: ok
+    spans:
+    - service: order-svc
+      operation: POST /orders
+      duration_ms: 262
+      status: ok
+      attrs:
+        version: 7.3.1
+    - service: order-svc
+      operation: dns.lookup payments-svc.prod.svc.cluster.local
+      duration_ms: 38
+      status: ok
+      attrs:
+        resolver: 10.96.0.10
+    - service: order-svc
+      operation: http.connect payments-svc
+      duration_ms: 3
+      status: ok
+      attrs:
+        reused_connection: false
+    - service: payments-svc
+      operation: POST /charges
+      duration_ms: 176
+      status: ok
+  - trace_id: t-c15-fail-2
+    start: 2026-09-03 02:31:20+00:00
+    duration_ms: 2003
+    status: error
+    spans:
+    - service: order-svc
+      operation: POST /orders
+      duration_ms: 2003
+      status: error
+      attrs:
+        version: 7.3.1
+        error: connect_timeout
+    - service: order-svc
+      operation: dns.lookup payments-svc.prod.svc.cluster.local
+      duration_ms: 2000
+      status: error
+      attrs:
+        resolver: 10.96.0.10
+        error: timeout
+  changes:
+  - ts: 2026-09-02 16:40:00+00:00
+    kind: config
+    service: cart-svc
+    summary: Increase cart TTL from 24h to 48h
+    author: cart-team
+  - ts: 2026-09-03 02:00:00+00:00
+    kind: deploy
+    service: order-svc
+    summary: order-svc 7.3.1 - migrate HTTP client to okhttp 5 (new connection pool defaults); dependency updates
+    author: orders-team
+  infra_events:
+  - ts: 2026-09-03 01:55:00+00:00
+    source: eks
+    entity: nodegroup/np-general
+    reason: NodegroupUpdateStarted
+    message: Managed node group auto-upgrade started (AMI release 2026.08.2), max unavailable 1.
+  - ts: 2026-09-03 02:05:31+00:00
+    source: kubernetes
+    entity: node/ip-10-2-4-11
+    reason: NodeDrain
+    message: Draining node for node group upgrade; evicting 14 pods.
+  - ts: 2026-09-03 02:05:40+00:00
+    source: kubernetes
+    entity: pod/coredns-7c9f8-hx2lq
+    reason: Evicted
+    message: Pod evicted from node ip-10-2-4-11 (node drain).
+  - ts: 2026-09-03 02:05:42+00:00
+    source: kubernetes
+    entity: pod/coredns-7c9f8-q8vtd
+    reason: Evicted
+    message: Pod evicted from node ip-10-2-4-11 (node drain).
+  - ts: 2026-09-03 02:06:15+00:00
+    source: kubernetes
+    entity: deployment/coredns
+    reason: FailedScheduling
+    message: 'Replacement pods coredns-7c9f8-m2kd9, coredns-7c9f8-z7rtw Pending: 0/9 nodes are available: 9 Insufficient cpu.'
+  - ts: 2026-09-03 02:38:00+00:00
+    source: eks
+    entity: nodegroup/np-general
+    reason: NodegroupUpdateInProgress
+    message: 4 of 9 nodes updated.
+  alerts:
+  - ts: 2026-09-03 02:12:00+00:00
+    name: OrderErrorRateHigh
+    severity: critical
+    entity: order-svc
+    state: firing
+    summary: order-svc error rate above 5% for 3 minutes
+  runbooks:
+  - id: rb-dns-errors
+    title: DNS resolution errors in the cluster
+    body: 'Symptoms: EAI_AGAIN or DNS timeouts in service logs. Check coredns ready replicas and latency; scale coredns or move it to the system node group. NodeLocal DNSCache is planned but not rolled out.'
+  - id: rb-order-rollback
+    title: Rolling back order-svc
+    body: Roll back with the deploy tool; about 5 minutes for 12 pods.
+  past_incidents:
+  - id: PIR-2026-019
+    date: '2026-03-14T00:00:00Z'
+    title: Checkout errors after HTTP client upgrade in cart-svc
+    summary: cart-svc requests to inventory-svc failed after an HTTP client library upgrade.
+    root_cause: The new client's default connection pool allowed only 2 connections per host, so requests queued and timed out.
+    resolution: Rolled back, then re-released with an explicit pool size.
+tool_faults: []

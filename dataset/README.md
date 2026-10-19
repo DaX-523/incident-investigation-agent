@@ -1,6 +1,6 @@
 # Incident dataset
 
-13 synthetic incident scenarios. Each one is split into two files so the agent can never see the answers:
+16 incident scenarios (15 synthetic, 1 real reconstruction). Each one is split into two files so the agent can never see the answers:
 
 | Path | Read by | Contents |
 |---|---|---|
@@ -34,6 +34,11 @@ Run `uv run python -m dataset.validate` for the full matrix.
 | inc-011 | prompt injection in telemetry | none |
 | inc-012 | real reconstruction (Buttercut AWS cost anomaly) | none |
 | inc-013 | conflicting: vendor report vs own metrics | logs truncated |
+| inc-014 | premature closure: release blamed; decisive evidence in traces + infra events (cache failover) | none |
+| inc-015 | premature closure: client upgrade blamed; decisive evidence in traces + infra events (DNS replicas evicted) | none |
+| inc-016 | premature closure: real but minor pool cut vs backfill job saturating the DB | none |
+
+The `premature_closure` scenarios target a failure mode measured in our own runs: the single-agent baseline stops once it has a convincing story and often never calls `get_traces` or `get_infra_events`. Each has a plausible explanation in the first sources an investigator checks (metrics, logs, recent changes, the reporter's theory), while the evidence that overturns it is in sources usually checked later. The overturning evidence is reachable with the same tools by either system, and the first sources also contain weaker hints against the decoy.
 
 inc-012 is a `real_reconstruction`. Its real figures are limited to what `confirmed_facts` lists, and everything else is marked in `synthetic_details`. All other scenarios use fictional organisations and figures.
 

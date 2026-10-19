@@ -1,0 +1,84 @@
+id: inc-014
+metadata:
+  id: inc-014
+  title: Search deploy coincides with a cold pricing cache after a Redis failover
+  primary_tag: premature_closure
+  tags: [premature_closure, misleading_evidence]
+  difficulty: L3
+  provenance: synthetic
+  inspired_by: Cache-failover postmortems where a replica promoted mid-resync leaves the cache nearly empty and the database behind it saturates, while an unrelated release takes the blame
+ground_truth:
+  root_cause:
+    statement: pricing-cache failed over at 13:18 to a replica that was mid full-resync (0.4M of 9.8M keys), so pricing-svc's cache hit ratio fell from 0.97 to 0.15, misses went to rates-db (CPU ~96%, 2s queries), and price lookups from search-api and deals-api exceeded their deadlines.
+    fault_type: cold_cache_after_failover
+    entity: pricing-cache failover to a resyncing replica
+    aliases:
+    - pricing-cache failover left the cache cold
+    - Redis failover emptied the pricing cache
+    - pricing cache misses overloaded rates-db
+    - cold pricing cache after replica promotion
+  contributing_factors:
+  - statement: The promoted replica was in the middle of a full resync, so the new primary had almost no keys.
+    must_mention: true
+  - statement: search-api's ranking blocks on a price quote for every candidate, so slow pricing turns into deadline errors and partial results.
+    must_mention: false
+  - statement: The cache runbook's warm-up step (pricing-warmer) was not triggered automatically after the failover.
+    must_mention: false
+  propagation_chain:
+  - pricing-cache-002 starts full resync at 13:02
+  - primary pricing-cache-001 fails at 13:17 and the nearly empty replica is promoted
+  - pricing-svc cache hit ratio drops to 0.15; misses query rates-db
+  - rates-db CPU ~96%, quote queries take ~2s
+  - search-api and deals-api price lookups time out; search returns partial results
+  red_herrings:
+  - claim: search-api 4.2.0 (new ranking model) caused the slowdown, so roll it back.
+    why_wrong: Traces show ranking.score at 33-41ms on both v4.1.3 and v4.2.0, with the time spent in pricing-svc getQuotes on cache misses; deals-api, which was not deployed, degraded at the same moment; and v4.2.0 is fast once the cache warms.
+    disproved_by: [ev_traces, ev_deals_metrics, ev_cache_failover]
+  key_evidence:
+  - id: ev_traces
+    tool: get_traces
+    description: slow requests spend ~2.4s in pricing-svc getQuotes (cache miss); ranking stays ~35ms on v4.2.0
+  - id: ev_cache_failover
+    tool: get_infra_events
+    description: pricing-cache failover at 13:18 to a replica mid full-resync (0.4M of 9.8M keys)
+  - id: ev_pricing_metrics
+    tool: query_metrics
+    args:
+      service: pricing-svc
+    description: cache hit ratio 0.97 -> 0.15 and pricing p99 ~2.4s from 13:20
+  - id: ev_deals_metrics
+    tool: query_metrics
+    args:
+      service: deals-api
+    description: deals-api (no deploy) degrades at the same time
+    required: false
+  - id: ev_rates_db
+    tool: query_metrics
+    args:
+      service: rates-db
+    description: rates-db CPU ~96%
+    required: false
+  - id: ev_past_cache_incident
+    tool: search_past_incidents
+    description: prior incident with the same cold-cache pattern
+    required: false
+  expected_confidence: high
+  corrective_actions:
+  - rank: 1
+    category: mitigate
+    action: Run pricing-warmer to preload quotes and shed or rate-limit quote traffic to rates-db until the hit ratio recovers; keep search-api 4.2.0.
+    rationale: Restores the cache that absorbs rates-db load; rolling back search-api would not change the miss rate.
+  - rank: 2
+    category: fix
+    action: Prevent promoting a replica that has not finished resynchronizing, or trigger the warmer automatically after any failover.
+    rationale: The failover itself produced the empty cache.
+  - rank: 3
+    category: prevent
+    action: Give search-api a pricing time budget with a degraded ranking mode (rank without price, or cached prices) instead of failing the whole request.
+    rationale: One slow dependency turned into user-facing errors.
+  - rank: 4
+    category: detect
+    action: Alert on pricing-svc cache hit ratio and on cache failovers, routed to the pricing and search on-call.
+    rationale: The cache signal led the incident but nobody was paged on it.
+  must_not:
+  - Recommend rolling back search-api 4.2.0 as the fix.

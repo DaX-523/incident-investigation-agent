@@ -1,0 +1,251 @@
+id: inc-016
+incident_report:
+  reported_at: 2026-09-15 09:40:00+00:00
+  reporter: partner support lead
+  severity: SEV2
+  title: Partners getting 5xx from the tracking API since ~09:00
+  description: |
+    Several logistics partners report HTTP 500/503 from the shipment tracking API since about 09:00
+    UTC, roughly one call in eight. FinOps reduced the tracking-api database connection pool at
+    08:55 and the errors say the pool is exhausted. Should we just revert the pool change?
+environment:
+  window:
+    start: 2026-09-15 08:30:00+00:00
+    end: 2026-09-15 10:30:00+00:00
+  topology:
+    services:
+    - name: partner-api
+      kind: gateway
+      depends_on: [tracking-api]
+    - name: tracking-api
+      kind: service
+      depends_on: [tracking-db, events-queue]
+      notes: Read-mostly API over shipment events. Connection pool acquire timeout 2000ms.
+    - name: webhook-ingest
+      kind: service
+      depends_on: [tracking-db, events-queue]
+      notes: Writes carrier webhook events into tracking-db.
+    - name: data-jobs
+      kind: batch
+      depends_on: [tracking-db]
+      notes: Kubernetes namespace for ad-hoc data maintenance jobs.
+    - name: events-queue
+      kind: queue
+    - name: tracking-db
+      kind: postgres
+      notes: Single primary, provisioned 10000 write IOPS.
+  metrics:
+  - service: tracking-api
+    name: error_rate
+    unit: percent
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [0.2, 0.2, 0.3, 0.2, 0.4, 1.1, 11.8, 12.6, 12.9, 12.4, 13.1, 12.7, 12.5, 12.9, 13.0, 12.6, 12.8, 12.4, 12.9, 13.2, 12.7, 12.5, 12.8, 12.6]
+  - service: tracking-api
+    name: request_rate
+    unit: rps
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [418, 422, 419, 425, 421, 417, 423, 420, 418, 424, 421, 419, 422, 420, 417, 423, 421, 418, 420, 422, 419, 421, 418, 420]
+  - service: tracking-api
+    name: db_pool_in_use
+    unit: count
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [17, 18, 17, 18, 31, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40]
+  - service: tracking-api
+    name: db_pool_max_size
+    unit: count
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [50, 50, 50, 50, 50, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40]
+  - service: tracking-api
+    name: db_pool_wait_p99
+    unit: ms
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [1, 1, 2, 1, 3, 420, 1950, 1980, 1990, 1970, 1985, 1990, 1975, 1980, 1995, 1985, 1970, 1990, 1980, 1985, 1990, 1975, 1980, 1985]
+  - service: tracking-db
+    name: query_latency_p99
+    unit: ms
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [9, 8, 9, 10, 140, 610, 950, 980, 960, 990, 970, 985, 960, 975, 990, 980, 965, 970, 985, 975, 980, 970, 990, 975]
+  - service: tracking-db
+    name: write_iops
+    unit: count
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [1480, 1520, 1500, 1510, 8900, 9850, 9900, 9880, 9910, 9890, 9900, 9870, 9920, 9890, 9900, 9880, 9910, 9900, 9890, 9880, 9900, 9910, 9890, 9900]
+  - service: tracking-db
+    name: lock_waits_per_s
+    unit: count
+    start: 2026-09-15 08:30:00+00:00
+    step_seconds: 300
+    values: [0, 0, 0, 0, 31, 44, 47, 46, 48, 45, 47, 46, 48, 47, 45, 46, 48, 47, 46, 45, 47, 48, 46, 47]
+  logs:
+  - ts: 2026-09-15 08:49:58+00:00
+    service: data-jobs
+    level: INFO
+    message: 'backfill-carrier-events started: 2,000,000 events to re-import, batch_size=5000, parallelism=16'
+  - ts: 2026-09-15 08:55:20+00:00
+    service: tracking-api
+    level: INFO
+    message: 'config reloaded: db.pool.max_size 50 -> 40'
+  - ts: 2026-09-15 09:02:11+00:00
+    service: tracking-api
+    level: ERROR
+    message: timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)
+    attrs:
+      route: GET /shipments/{id}/events
+  - ts: 2026-09-15 09:05:43+00:00
+    service: tracking-db
+    level: WARN
+    message: process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms
+  - ts: 2026-09-15 09:07:30+00:00
+    service: webhook-ingest
+    level: WARN
+    message: 'event write slow: 1840ms'
+  - ts: 2026-09-15 09:10:02+00:00
+    service: tracking-api
+    level: ERROR
+    message: timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)
+    attrs:
+      route: GET /shipments/{id}/events
+  - ts: 2026-09-15 09:21:45+00:00
+    service: tracking-api
+    level: ERROR
+    message: timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)
+    attrs:
+      route: GET /shipments/{id}
+  traces:
+  - trace_id: t-c16-before-1
+    start: 2026-09-15 08:40:12+00:00
+    duration_ms: 19
+    status: ok
+    spans:
+    - service: tracking-api
+      operation: GET /shipments/{id}/events
+      duration_ms: 19
+      status: ok
+    - service: tracking-api
+      operation: db.pool.acquire
+      duration_ms: 0.4
+      status: ok
+    - service: tracking-db
+      operation: SELECT shipment_events
+      duration_ms: 7
+      status: ok
+      attrs:
+        rows: 23
+  - trace_id: t-c16-fail-1
+    start: 2026-09-15 09:12:05+00:00
+    duration_ms: 2006
+    status: error
+    spans:
+    - service: tracking-api
+      operation: GET /shipments/{id}/events
+      duration_ms: 2006
+      status: error
+      attrs:
+        error: pool_timeout
+    - service: tracking-api
+      operation: db.pool.acquire
+      duration_ms: 2000
+      status: error
+      attrs:
+        error: timeout
+  - trace_id: t-c16-slow-1
+    start: 2026-09-15 09:12:09+00:00
+    duration_ms: 1452
+    status: ok
+    spans:
+    - service: tracking-api
+      operation: GET /shipments/{id}/events
+      duration_ms: 1452
+      status: ok
+    - service: tracking-api
+      operation: db.pool.acquire
+      duration_ms: 480
+      status: ok
+    - service: tracking-db
+      operation: SELECT shipment_events
+      duration_ms: 941
+      status: ok
+      attrs:
+        rows: 23
+        wait_event: Lock:tuple
+  - trace_id: t-c16-batch-1
+    start: 2026-09-15 09:15:30+00:00
+    duration_ms: 4210
+    status: ok
+    spans:
+    - service: data-jobs
+      operation: backfill.batch
+      duration_ms: 4210
+      status: ok
+      attrs:
+        job: backfill-carrier-events
+        batch_size: 5000
+    - service: tracking-db
+      operation: INSERT shipment_events ON CONFLICT DO UPDATE
+      duration_ms: 4120
+      status: ok
+      attrs:
+        rows: 5000
+  changes:
+  - ts: 2026-09-14 14:10:00+00:00
+    kind: deploy
+    service: tracking-api
+    summary: tracking-api 3.9.0 - pagination fix for long event histories
+    author: tracking-team
+  - ts: 2026-09-15 08:55:00+00:00
+    kind: config
+    service: tracking-api
+    summary: Reduce db.pool.max_size from 50 to 40 (FinOps right-sizing of DB connections)
+    author: platform-finops
+    details: Peak observed pool usage over the last 14 days was 22 connections.
+  infra_events:
+  - ts: 2026-09-15 08:49:50+00:00
+    source: kubernetes
+    entity: job/backfill-carrier-events
+    reason: SuccessfulCreate
+    message: Job created in namespace data-jobs by data-eng; parallelism 16.
+  - ts: 2026-09-15 08:50:06+00:00
+    source: kubernetes
+    entity: job/backfill-carrier-events
+    reason: Scaled
+    message: 16 of 16 pods running.
+  - ts: 2026-09-15 08:58:00+00:00
+    source: rds
+    entity: tracking-db
+    reason: WriteIOPSHigh
+    message: Write IOPS at 98% of provisioned (10000) for 5 minutes.
+  alerts:
+  - ts: 2026-09-15 09:03:00+00:00
+    name: TrackingApi5xxHigh
+    severity: critical
+    entity: tracking-api
+    state: firing
+    summary: tracking-api 5xx above 5% for 3 minutes
+  - ts: 2026-09-15 09:04:00+00:00
+    name: DbPoolSaturated
+    severity: warning
+    entity: tracking-api
+    state: firing
+    summary: tracking-api DB pool at 100% utilisation
+  runbooks:
+  - id: rb-data-backfill
+    title: Running data backfills against tracking-db
+    body: Backfills that write to tracking-db must run between 01:00 and 05:00 UTC with parallelism of 4 or less, and must be announced in the platform channel.
+  - id: rb-db-pool
+    title: Tuning service DB pools
+    body: Pool size should cover peak concurrent queries with 50% headroom. Pool exhaustion is usually a symptom of slow queries; check DB latency before resizing.
+  past_incidents:
+  - id: PIR-2026-024
+    date: '2026-05-20T00:00:00Z'
+    title: billing-api timeouts after connection pool reduction
+    summary: billing-api returned 503s after its DB pool was reduced during a cost review.
+    root_cause: Pool sized below peak concurrency during month-end invoicing.
+    resolution: Reverted the pool size; added a month-end load check to pool changes.
+tool_faults: []
