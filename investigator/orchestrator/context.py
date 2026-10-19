@@ -8,7 +8,16 @@ from pydantic import BaseModel, ConfigDict
 from typing_extensions import TypedDict
 
 from investigator.orchestrator.manager import ranked_hypotheses
-from investigator.schemas import CriticVerdict, Evidence, Gap, Hypothesis, InvestigationState, Task, TriagePlan
+from investigator.schemas import (
+    CriticVerdict,
+    Evidence,
+    Gap,
+    Hypothesis,
+    InvestigationState,
+    Task,
+    ToolCallRecord,
+    TriagePlan,
+)
 
 
 class WorkerContext(BaseModel):
@@ -19,6 +28,7 @@ class WorkerContext(BaseModel):
     hypotheses: list[Hypothesis] = []
     evidence: list[Evidence] = []
     gaps: list[Gap] = []
+    tool_calls: list[ToolCallRecord] = []  # every query the team has run so far
     last_verdict: CriticVerdict | None = None
     human_inputs: list[str] = []
     tool_call_allowance: int = 0
@@ -41,6 +51,7 @@ def build_context(state: InvestigationState, task: Task) -> WorkerContext:
         hypotheses=ranked_hypotheses(state),
         evidence=list(state["evidence"]),
         gaps=list(state["gaps"]),
+        tool_calls=[c for o in state.get("outcomes", []) for c in o.tool_calls],
         last_verdict=state["verdicts"][-1] if state.get("verdicts") else None,
         human_inputs=list(state.get("human_inputs", [])),
         tool_call_allowance=min(remaining, limits.max_tool_calls_per_task) if is_gatherer else 0,

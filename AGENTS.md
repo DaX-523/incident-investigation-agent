@@ -123,7 +123,7 @@ uv run python -m evals.compare --rescore evals/results/<dir> # re-score saved ru
 
 The Studio entry point is `investigator/studio.py`. Its run context is `{scenario, mode: stub|llm, preset, investigation_mode}`.
 
-Model choice per role lives in `investigator/llm/config.py`. The default preset is `budget` while testing, to keep cost down. Every LLM call is metered (tokens, cache reads, thinking, USD) by role and by model. On Opus/Sonnet 5.5, use `with_structured_output(..., method="json_schema")`, never forced tool choice (400 on these models).
+Model choice per role lives in `investigator/llm/config.py`. The default preset is `budget` while testing, to keep cost down. Every LLM call is metered (tokens, cache reads, thinking, USD) by role and by model. Prompt caching is on only for multi-turn tool loops (gatherers, baseline): `build_chat_model(spec, cache=True)`. The `max_tokens` budget counts cache reads, so caching cuts cost and latency but not budget use. On Opus/Sonnet 5.5, use `with_structured_output(..., method="json_schema")`, never forced tool choice (400 on these models).
 
 ## Conventions
 

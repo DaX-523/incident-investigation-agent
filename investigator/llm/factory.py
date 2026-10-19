@@ -11,17 +11,22 @@ _FALLBACK_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
-def build_chat_model(spec: ModelSpec, *, timeout_s: float = 120.0, max_retries: int = 2) -> BaseChatModel:
+def build_chat_model(spec: ModelSpec, *, cache: bool = False, timeout_s: float = 120.0, max_retries: int = 2) -> BaseChatModel:
+    """`cache=True` for multi-turn tool loops, which resend a growing prefix every turn. One-shot calls
+    would only pay the cache-write premium."""
     if spec.provider == "anthropic":
         from langchain_anthropic import ChatAnthropic
 
+        model_kwargs: dict = {"cache_control": {"type": "ephemeral"}} if cache else {}
         kwargs: dict = {}
         if spec.model in _FALLBACK_MODELS:
             # Security-heavy telemetry (injection payloads, exploit strings) can trip safety
             # classifiers; route declines to a fallback model instead of failing the step.
-            kwargs = {"betas": [_FALLBACK_BETA], "model_kwargs": {"fallbacks": "default"}}
+            model_kwargs["fallbacks"] = "default"
+            kwargs = {"betas": [_FALLBACK_BETA]}
         return ChatAnthropic(
             model=spec.model,
+            model_kwargs=model_kwargs,
             effort=spec.effort,
             max_tokens=spec.max_tokens,
             max_retries=max_retries,

@@ -31,6 +31,9 @@ from investigator.tools.models import DataQuality, TimeRange, ToolError, ToolRes
 from investigator.tools.registry import TOOL_SPECS, ToolSpec
 
 
+EMPTY_NOTE = "no results returned"
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, default))
@@ -182,7 +185,7 @@ class ToolHarness:
                         empty=not items, null_points=null_points)
         notes = []
         if q.empty:
-            notes.append("no results returned")
+            notes.append(EMPTY_NOTE)
         if requested and returned and requested.start and requested.end:
             if returned.end < requested.start or returned.start > requested.end:
                 q.out_of_requested_range = True

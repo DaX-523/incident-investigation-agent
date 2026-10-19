@@ -8,6 +8,7 @@ import pytest
 from dataset.schema import TOOLS
 from investigator.scenario import load_scenario, scenario_ids
 from investigator.tools import TOOL_SPECS, RetrySettings, ToolHarness
+from investigator.tools.toolbox import ToolBox
 
 FAST = RetrySettings(max_retries=2, timeout_s=2.0, backoff_base_s=0.2, backoff_cap_s=2.0)
 
@@ -85,6 +86,15 @@ def test_empty_fault_returns_ok_with_empty_flag():
         result = harness.call("get_traces", {})
     assert result.ok and result.data["traces"] == []
     assert result.quality.empty
+
+
+def test_empty_result_is_recorded_as_an_observation_not_a_quality_gap():
+    harness, _ = make("inc-004")
+    with harness:
+        toolbox = ToolBox(harness, 2)
+        toolbox.call("get_traces", {})
+    [record] = toolbox.records()
+    assert record.ok and record.empty and record.quality_notes == []
 
 
 def test_stale_fault_is_flagged_by_range_check():

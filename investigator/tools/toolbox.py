@@ -10,7 +10,7 @@ import threading
 from typing import Any
 
 from investigator.schemas import ToolCallRecord
-from investigator.tools.harness import ToolHarness
+from investigator.tools.harness import EMPTY_NOTE, ToolHarness
 from investigator.tools.models import ToolError, ToolResult
 from investigator.tools.registry import TOOL_SPECS
 
@@ -59,7 +59,10 @@ class ToolBox:
                 ok=r.ok,
                 error_kind=r.error.kind if r.error else None,
                 error_message=r.error.message if r.error else None,
-                quality_notes=r.quality.notes if r.quality else [],
+                empty=bool(r.quality and r.quality.empty),
+                # An empty result is an observation (shown in the query log), not a data-quality gap;
+                # agents decide whether it means "nothing happened" or "the source is broken".
+                quality_notes=[n for n in r.quality.notes if n != EMPTY_NOTE] if r.quality else [],
             )
             for r in results
         ]

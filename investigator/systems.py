@@ -50,7 +50,7 @@ def run_system(scenario: Scenario, system: System, preset: str, config: Investig
         from investigator.llm.factory import build_chat_model
 
         spec = models["baseline"]
-        model = LLMBaselineModel(_Caller("baseline", spec, build_chat_model(spec), ledger))
+        model = LLMBaselineModel(_Caller("baseline", spec, build_chat_model(spec, cache=True), ledger))
         return run_baseline(scenario, model, config, ledger=ledger)
 
     from investigator.agents.llm_agents import llm_workers

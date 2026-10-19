@@ -157,6 +157,7 @@ class ToolCallRecord(_Model):
     ok: bool
     error_kind: str | None = None
     error_message: str | None = None
+    empty: bool = False
     quality_notes: list[str] = []
 
 

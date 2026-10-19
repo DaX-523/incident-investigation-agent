@@ -11,6 +11,7 @@ from investigator.agents.llm_agents import (
     render_tool_result,
 )
 from investigator.llm.config import PRESETS, load_model_config
+from investigator.llm.factory import build_chat_model
 from investigator.llm.metering import UsageLedger
 from investigator.llm.pricing import cost_usd
 from investigator.orchestrator.context import WorkerContext
@@ -23,6 +24,7 @@ from investigator.schemas import (
     HypothesisSpec,
     Task,
     TaskSpec,
+    ToolCallRecord,
     TriagePlan,
 )
 from investigator.tools.harness import RetrySettings, ToolHarness
@@ -155,6 +157,26 @@ def test_tool_allowance_is_respected_by_the_loop():
     g, task, ctx, toolbox, *_ = gatherer(script, allowance=3)
     outcome = g(task, ctx, toolbox)
     assert len(toolbox.records()) == 3 and outcome.evidence
+
+
+def test_gatherer_brief_lists_queries_the_team_already_ran():
+    g, task, ctx, *_ = gatherer(lambda m: ai())
+    ctx = ctx.model_copy(update={"tool_calls": [
+        ToolCallRecord(call_id="c1", tool="get_changes", args={"service": "api"}, ok=True, empty=True),
+        ToolCallRecord(call_id="c2", tool="search_logs", ok=False, error_kind="timeout"),
+    ]})
+    brief = g._brief(task, ctx)
+    assert 'get_changes {"service": "api"} -> no results' in brief
+    assert "search_logs {} -> failed (timeout)" in brief
+
+
+def test_prompt_caching_only_on_tool_loops(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test")
+    config = load_model_config(env={})
+    assert build_chat_model(config["baseline"], cache=True).model_kwargs["cache_control"] == {"type": "ephemeral"}
+    workers = llm_workers(config, UsageLedger())
+    assert "cache_control" in workers.gatherers["observability"].caller.model.model_kwargs
+    assert "cache_control" not in workers.reasoner.caller.model.model_kwargs
 
 
 def test_large_tool_results_are_truncated_with_a_visible_marker():

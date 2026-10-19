@@ -33,6 +33,7 @@ from investigator.schemas import (
     InvestigationState,
     Outcome,
     Task,
+    ToolCallRecord,
     TriagePlan,
     Usage,
 )
@@ -123,6 +124,17 @@ def render_gaps(gaps: list[Gap], limit: int = 30) -> str:
     return "\n".join(f"- [{g.kind}] {g.description}" for g in gaps[-limit:]) or "(none)"
 
 
+def render_tool_calls(calls: list[ToolCallRecord], limit: int = 40) -> str:
+    lines = []
+    for c in calls[-limit:]:
+        if not c.ok:
+            result = f"failed ({c.error_kind})"
+        else:
+            result = "no results" if c.empty else "ok"
+        lines.append(f"- {c.tool} {_dump(c.args)} -> {result}")
+    return "\n".join(lines) or "(none)"
+
+
 # --- model calls ----------------------------------------------------------------------
 
 
@@ -202,6 +214,8 @@ class LLMGatherer:
             f"Focus services: {', '.join(task.services)}" if task.services else "",
             f"Hypotheses under test (link evidence to these ids):\n{render_hypotheses(ctx.hypotheses)}",
             f"Evidence already collected by the team (don't duplicate):\n{render_evidence(ctx.evidence, 30)}",
+            f"Queries already run by the team (don't repeat them; their findings are in the evidence above):\n"
+            f"{render_tool_calls(ctx.tool_calls)}" if ctx.tool_calls else "",
             f"Known gaps:\n{render_gaps(ctx.gaps, 15)}",
             "Human input:\n" + "\n".join(ctx.human_inputs) if ctx.human_inputs else "",
             f"Tool-call allowance for this task: {ctx.tool_call_allowance}. When done, call {SUBMIT_TOOL}.",
@@ -306,7 +320,7 @@ class LLMReporter:
 def llm_workers(config: dict[Role, ModelSpec], ledger: UsageLedger, models: dict[Role, BaseChatModel] | None = None) -> Workers:
     """Build all workers. `models` lets tests inject fake chat models per role."""
     def caller(role: Role) -> _Caller:
-        model = (models or {}).get(role) or build_chat_model(config[role])
+        model = (models or {}).get(role) or build_chat_model(config[role], cache=role in GATHERERS)
         return _Caller(role, config[role], model, ledger)
 
     return Workers(

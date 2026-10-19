@@ -49,7 +49,7 @@ class StudioContext(BaseModel):
             self._ledger = UsageLedger()
             self._workers = llm_workers(config, self._ledger)
             spec = config["baseline"]
-            self._baseline = LLMBaselineModel(_Caller("baseline", spec, build_chat_model(spec), self._ledger))
+            self._baseline = LLMBaselineModel(_Caller("baseline", spec, build_chat_model(spec, cache=True), self._ledger))
         else:
             from investigator.agents.stubs import StubBaselineModel, stub_workers
 

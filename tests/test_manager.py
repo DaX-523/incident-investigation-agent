@@ -3,6 +3,7 @@ import random
 import pytest
 from pydantic import ValidationError
 
+from investigator.orchestrator.context import build_context
 from investigator.orchestrator.manager import (
     apply_outcomes,
     apply_triage,
@@ -200,6 +201,17 @@ def test_tool_failures_and_quality_notes_become_gaps_automatically():
     assert kinds == ["data_quality", "tool_failure"]
     assert state["tasks"][tasks[0].task_id].status == "partial"
     assert state["budget"].usage.tool_calls == 2
+
+
+def test_worker_context_lists_every_query_the_team_ran():
+    state = triaged()
+    state, tasks = dispatch(state)
+    out = Outcome(task_id=tasks[0].task_id, agent=tasks[0].agent, status="ok",
+                  tool_calls=[call("c1"), call("c2", tool="search_logs", ok=False)])
+    state = deliver(state, out)
+    state = merged(state, apply_outcomes(state))
+    ctx = build_context(state, tasks[1])
+    assert [c.call_id for c in ctx.tool_calls] == ["c1", "c2"]
 
 
 def test_duplicate_and_stale_outcomes_are_ignored():
