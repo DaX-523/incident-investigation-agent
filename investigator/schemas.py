@@ -235,6 +235,11 @@ class CriticVerdict(_Model):
     issues: list[str] = []
     requests: list[EvidenceRequest] = []
     questions_for_human: list[str] = []
+    # "inconclusive" must say what blocks a decision; the orchestrator treats an unjustified one as accept.
+    competing_hypotheses: list[str] = Field(
+        [], description="Ids of hypotheses supported as strongly as the top one that the evidence cannot separate.")
+    blocking_gaps: list[str] = Field(
+        [], description="Specific missing data or failed sources that prevent a decision.")
 
 
 # --- outcome (the only thing workers produce) -----------------------------------------

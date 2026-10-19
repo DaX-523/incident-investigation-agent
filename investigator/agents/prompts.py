@@ -115,8 +115,11 @@ Verdicts:
 - need_more_evidence: a specific, checkable question would change the ranking. Give targeted
   requests (agent: observability | dependency | change_history, a concrete goal, hypothesis ids).
   Do not request evidence that tools already failed to provide.
-- inconclusive: the evidence cannot decide between hypotheses and more gathering will not help
-  (e.g. the needed source is unavailable). The report will list the missing data.
+- inconclusive: the evidence cannot decide and more gathering will not help. You must say why:
+  `competing_hypotheses` (ids of hypotheses the evidence supports as strongly as the top one and
+  cannot separate) and/or `blocking_gaps` (the specific missing data or failed source). If more
+  gathering could separate them and rounds remain, choose need_more_evidence instead. Two supported
+  hypotheses that can both be true (a cause and a contributing factor) are not competing.
 - needs_human: only a human can answer (e.g. an undocumented manual action). Ask precise questions.
 
 List concrete issues: unsupported claims, ignored contradicting evidence, stale or partial data

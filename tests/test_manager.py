@@ -297,9 +297,29 @@ def test_accept_with_evidence_goes_to_report():
     assert d.update["phase"] == "report"
 
 
-def test_inconclusive_verdict_reports_inconclusive():
-    state = to_critique(triaged(gate_top_k=1), CriticVerdict(verdict="inconclusive"))
+def test_inconclusive_verdict_with_blocking_gap_reports_inconclusive():
+    verdict = CriticVerdict(verdict="inconclusive", blocking_gaps=["log search timed out for the whole window"])
+    state = to_critique(triaged(gate_top_k=1), verdict)
     assert step(state, T0).stop_reason == "inconclusive"
+
+
+def test_unjustified_inconclusive_is_treated_as_accept():
+    state = to_critique(triaged(gate_top_k=1), CriticVerdict(verdict="inconclusive", competing_hypotheses=["H404"]))
+    d = step(state, T0)
+    assert d.stop_reason == "accepted"
+    assert any("treated as accept" in e for e in d.update["errors"])
+
+
+@pytest.mark.parametrize("status, confidence, expected", [
+    ("supported", "high", "inconclusive"),   # as strong as the top hypothesis
+    ("supported", "medium", "accepted"),     # weaker than the top one
+    ("refuted", "high", "accepted"),
+])
+def test_inconclusive_needs_an_equally_supported_competitor(status, confidence, expected):
+    state = to_critique(triaged(gate_top_k=1), CriticVerdict(verdict="inconclusive", competing_hypotheses=["H2"]))
+    h2 = state["hypotheses"]["H2"].model_copy(update={"status": status, "confidence": confidence, "rank": 2})
+    state = merged(state, {"hypotheses": {**state["hypotheses"], "H2": h2}})
+    assert step(state, T0).stop_reason == expected
 
 
 def test_need_more_evidence_creates_targeted_round():

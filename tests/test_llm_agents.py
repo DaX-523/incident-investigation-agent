@@ -2,6 +2,7 @@ import pytest
 from langchain_core.messages import ToolMessage
 
 from investigator.agents.llm_agents import (
+    LLMCritic,
     LLMGatherer,
     LLMRefusal,
     ReasoningOutput,
@@ -177,6 +178,21 @@ def test_prompt_caching_only_on_tool_loops(monkeypatch):
     workers = llm_workers(config, UsageLedger())
     assert "cache_control" in workers.gatherers["observability"].caller.model.model_kwargs
     assert "cache_control" not in workers.reasoner.caller.model.model_kwargs
+
+
+@pytest.mark.parametrize("human_available", [False, True])
+def test_critic_is_told_when_no_human_can_answer(human_available):
+    seen = []
+
+    def critic(schema, messages):
+        seen.append(messages[-1].content)
+        return CriticVerdict(verdict="accept")
+
+    spec = load_model_config(env={})["critic"]
+    worker = LLMCritic(_Caller("critic", spec, FakeModel(structured=critic), UsageLedger()))
+    task = Task(task_id="T9", agent="critic", goal="challenge")
+    worker(task, WorkerContext(incident={"title": "x"}, human_available=human_available))
+    assert ("never choose needs_human" in seen[0]) is not human_available
 
 
 def test_large_tool_results_are_truncated_with_a_visible_marker():

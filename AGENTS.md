@@ -30,7 +30,7 @@ Implement all of:
 - The investigation cannot be skipped. A graph-level gate prevents the report step until each hypothesis has supporting or refuting evidence and a minimum set of sources has been checked, within the execution limits.
 
 ### Evaluation
-- At least 10 test incidents covering misleading evidence, conflicting observations, and tool failures (`dataset/`, 13 today).
+- At least 10 test incidents covering misleading evidence, conflicting observations, and tool failures (`dataset/`, 16 today).
 - Compare multi-agent vs single-agent baseline on: **root-cause accuracy, evidence grounding, tool-call count, latency, token consumption**.
 
 ### Deliverables

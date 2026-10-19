@@ -34,6 +34,7 @@ class WorkerContext(BaseModel):
     tool_call_allowance: int = 0
     max_worker_attempts: int = 2
     critic_rounds_left: int = 0
+    human_available: bool = False
 
 
 class WorkerInput(TypedDict):
@@ -57,4 +58,5 @@ def build_context(state: InvestigationState, task: Task) -> WorkerContext:
         tool_call_allowance=min(remaining, limits.max_tool_calls_per_task) if is_gatherer else 0,
         max_worker_attempts=limits.max_worker_attempts,
         critic_rounds_left=max(0, limits.max_critic_loops - state["budget"].critic_loops - 1),
+        human_available=state["config"].mode == "interactive",
     )

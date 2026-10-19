@@ -456,8 +456,12 @@ def decide(state: InvestigationState, now: float | None = None) -> Decision:
 
         gate = evidence_gate(state)
         if gate.passed:
-            reason: StopReason = "inconclusive" if verdict is not None and verdict.verdict == "inconclusive" else "accepted"
-            return _report(state, reason)
+            if verdict is None or verdict.verdict != "inconclusive":
+                return _report(state, "accepted")
+            if _inconclusive_justified(state, verdict):
+                return _report(state, "inconclusive")
+            note = "critic returned inconclusive without a blocking gap or an equally supported competitor; treated as accept"
+            return _report(state, "accepted", {"errors": state["errors"] + [note]})
         if loops_left:
             new_tasks = _tasks_for_gate(state, gate)
             if new_tasks:
@@ -469,6 +473,28 @@ def decide(state: InvestigationState, now: float | None = None) -> Decision:
         return _dispatch(state, [_single(state, "reasoning", "Re-rank hypotheses including the human input.")], "reason")
 
     return _report(state, limit or "no_progress")
+
+
+_CONFIDENCE = {"low": 0, "medium": 1, "high": 2}
+
+
+def _inconclusive_justified(state: InvestigationState, verdict: CriticVerdict) -> bool:
+    """A named blocking gap, or a competitor that is supported at least as confidently as the top hypothesis."""
+    if any(g.strip() for g in verdict.blocking_gaps):
+        return True
+    ranked = ranked_hypotheses(state)
+    if not ranked:
+        return True
+    top = ranked[0]
+    if top.status != "supported":
+        return True  # nothing to accept; the report is inconclusive either way
+    top_conf = _CONFIDENCE.get(top.confidence or "low", 0)
+    for hid in verdict.competing_hypotheses:
+        h = state["hypotheses"].get(hid)
+        if h is not None and h.id != top.id and h.status == "supported" \
+                and _CONFIDENCE.get(h.confidence or "low", 0) >= top_conf:
+            return True
+    return False
 
 
 def _latest_critic_verdict(state: InvestigationState) -> CriticVerdict | None:

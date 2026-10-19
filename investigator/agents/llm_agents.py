@@ -291,10 +291,15 @@ class LLMCritic:
         self.caller = caller
 
     def __call__(self, task: Task, ctx: WorkerContext) -> Outcome:
+        final = "accept, inconclusive or needs_human" if ctx.human_available else "accept or inconclusive"
         brief = _analysis_brief(ctx) + (
             f"\n\nFurther evidence rounds available after this one: {ctx.critic_rounds_left}. "
-            "If none remain, choose accept, inconclusive or needs_human."
+            f"If none remain, choose {final}."
         )
+        if not ctx.human_available:
+            # In eval mode needs_human can only end the run as inconclusive, whatever the evidence says.
+            brief += ("\nNo human is available in this run, so never choose needs_human. Decide from the "
+                      "evidence: put questions a human could still answer in questions_for_human.")
         verdict, usage = self.caller.structured(CriticVerdict, [SystemMessage(prompts.CRITIC), HumanMessage(brief)])
         return Outcome(task_id=task.task_id, agent="critic", status="ok", verdict=verdict, usage=usage)
 
