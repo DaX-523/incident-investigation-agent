@@ -1,0 +1,318 @@
+"""LLM-backed workers: planner, three gatherers (tool loops), reasoner, critic, reporter.
+
+Each call is metered into a shared UsageLedger (tokens + USD by role and model).
+Failures raise; the graph's worker wrapper retries and degrades to a failed Outcome.
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from typing import Any
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from investigator.agents import prompts
+from investigator.graph import Workers
+from investigator.llm.config import ModelSpec, Role
+from investigator.llm.factory import build_chat_model
+from investigator.llm.metering import UsageLedger
+from investigator.orchestrator.context import WorkerContext
+from investigator.orchestrator.manager import ranked_hypotheses
+from investigator.report import ReportNarrative
+from investigator.schemas import (
+    GATHERERS,
+    CriticVerdict,
+    Evidence,
+    EvidenceDraft,
+    Gap,
+    Hypothesis,
+    HypothesisAssessment,
+    InvestigationState,
+    Outcome,
+    Task,
+    TriagePlan,
+    Usage,
+)
+from investigator.tools.models import ToolResult
+from investigator.tools.registry import TOOL_SPECS
+from investigator.tools.toolbox import ToolBox
+
+TOOLSETS: dict[str, list[str]] = {
+    "observability": ["query_metrics", "search_logs", "get_traces", "get_alerts", "get_infra_events", "get_external_report"],
+    "dependency": ["get_topology", "query_metrics", "get_alerts", "get_traces"],
+    "change_history": ["get_changes", "get_infra_events", "search_past_incidents", "search_runbooks", "get_external_report"],
+}
+SUBMIT_TOOL = "submit_findings"
+MAX_TOOL_RESULT_CHARS = 8_000
+MAX_SUBMIT_REMINDERS = 2
+
+
+class LLMRefusal(RuntimeError):
+    pass
+
+
+class StructuredOutputError(RuntimeError):
+    pass
+
+
+class GathererFindings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence: list[EvidenceDraft] = Field(description="Observations, each citing call_ids from this task.")
+    gaps: list[str] = Field([], description="Things you could not check, and why.")
+
+
+class ReasoningOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    assessments: list[HypothesisAssessment]
+
+
+# --- rendering ------------------------------------------------------------------------
+
+
+def _dump(obj: Any) -> str:
+    return json.dumps(obj, default=str, ensure_ascii=False)
+
+
+def render_tool_result(result: ToolResult, max_chars: int = MAX_TOOL_RESULT_CHARS) -> str:
+    payload = result.model_dump(mode="json", exclude={"latency_ms"})
+    text = _dump(payload)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f'... [investigator truncated {len(text) - max_chars} chars to fit context; narrow the query]'
+    return text
+
+
+def render_incident(incident: dict) -> str:
+    keys = ("title", "severity", "reported_at", "reporter", "description")
+    return "\n".join(f"{k}: {incident.get(k)}" for k in keys if incident.get(k))
+
+
+def render_hypotheses(hypotheses: list[Hypothesis]) -> str:
+    lines = []
+    for h in hypotheses:
+        line = f"- {h.id} [{h.origin}; status={h.status}"
+        if h.rank is not None:
+            line += f"; rank={h.rank}; confidence={h.confidence}"
+        line += f"] {h.statement}"
+        if h.supporting or h.contradicting:
+            line += f" (supporting={h.supporting}, contradicting={h.contradicting})"
+        if h.rationale:
+            line += f"\n    rationale: {h.rationale}"
+        lines.append(line)
+    return "\n".join(lines) or "(none)"
+
+
+def render_evidence(evidence: list[Evidence], limit: int = 80) -> str:
+    lines = []
+    for e in evidence[-limit:]:
+        links = ", ".join(f"{link.hypothesis_id}:{link.stance}" for link in e.links)
+        line = f"- {e.id} ({e.agent}, {'/'.join(e.tools)}; calls {','.join(e.source_call_ids)}) {e.summary}"
+        if links:
+            line += f" [links: {links}]"
+        if e.quality_notes:
+            line += f" [data quality: {'; '.join(e.quality_notes)}]"
+        lines.append(line)
+    return "\n".join(lines) or "(no evidence yet)"
+
+
+def render_gaps(gaps: list[Gap], limit: int = 30) -> str:
+    return "\n".join(f"- [{g.kind}] {g.description}" for g in gaps[-limit:]) or "(none)"
+
+
+# --- model calls ----------------------------------------------------------------------
+
+
+class _Caller:
+    def __init__(self, role: Role, spec: ModelSpec, model: BaseChatModel, ledger: UsageLedger):
+        self.role, self.spec, self.model, self.ledger = role, spec, model, ledger
+
+    def _check(self, message: AIMessage) -> None:
+        if (message.response_metadata or {}).get("stop_reason") == "refusal":
+            raise LLMRefusal(f"{self.role}: model declined the request ({message.response_metadata.get('stop_details')})")
+
+    def invoke(self, runnable, messages: list[BaseMessage]) -> tuple[AIMessage, Usage]:
+        started = time.monotonic()
+        message = runnable.invoke(messages)
+        usage = self.ledger.record(self.role, message, self.spec.model, (time.monotonic() - started) * 1000)
+        self._check(message)
+        return message, usage
+
+    def structured(self, schema: type[BaseModel], messages: list[BaseMessage]) -> tuple[Any, Usage]:
+        runnable = self.model.with_structured_output(schema, method="json_schema", include_raw=True)
+        started = time.monotonic()
+        out = runnable.invoke(messages)
+        raw: AIMessage = out["raw"]
+        usage = self.ledger.record(self.role, raw, self.spec.model, (time.monotonic() - started) * 1000)
+        self._check(raw)
+        if out.get("parsing_error") is not None or out.get("parsed") is None:
+            raise StructuredOutputError(f"{self.role}: could not parse {schema.__name__}: {out.get('parsing_error')}")
+        parsed = out["parsed"]
+        return (parsed if isinstance(parsed, schema) else schema.model_validate(parsed)), usage
+
+
+def _tool_def(name: str) -> dict:
+    spec = TOOL_SPECS[name]
+    return {"name": name, "description": spec.description, "input_schema": spec.input_model.model_json_schema()}
+
+
+SUBMIT_DEF = {
+    "name": SUBMIT_TOOL,
+    "description": "Submit your findings when you are done investigating. Call exactly once, at the end.",
+    "input_schema": GathererFindings.model_json_schema(),
+}
+
+
+# --- workers ----------------------------------------------------------------------------
+
+
+class LLMPlanner:
+    def __init__(self, caller: _Caller):
+        self.caller = caller
+
+    def __call__(self, incident: dict, toolbox: ToolBox) -> TriagePlan:
+        topology = toolbox.call("get_topology", {})
+        services = topology.data["services"] if topology.ok and topology.data else []
+        topo = "\n".join(f"- {s['name']} ({s['kind']}) -> {', '.join(s['depends_on']) or '-'}" for s in services)
+        messages = [
+            SystemMessage(prompts.PLANNER),
+            HumanMessage(f"Incident report:\n{render_incident(incident)}\n\nService topology:\n{topo or '(unavailable)'}"),
+        ]
+        plan, _ = self.caller.structured(TriagePlan, messages)
+        return plan
+
+
+class LLMGatherer:
+    def __init__(self, agent: str, caller: _Caller):
+        self.agent = agent
+        self.caller = caller
+        self.tool_names = TOOLSETS[agent]
+        self.bound = caller.model.bind_tools([_tool_def(n) for n in self.tool_names] + [SUBMIT_DEF])
+
+    def _brief(self, task: Task, ctx: WorkerContext) -> str:
+        triage = ctx.triage
+        parts = [
+            f"Incident report:\n{render_incident(ctx.incident)}",
+            f"Triage summary: {triage.summary}" if triage else "",
+            f"Incident window (planner estimate): {triage.window_start} .. {triage.window_end}" if triage and triage.window_start else "",
+            f"YOUR TASK ({task.task_id}): {task.goal}",
+            f"Focus services: {', '.join(task.services)}" if task.services else "",
+            f"Hypotheses under test (link evidence to these ids):\n{render_hypotheses(ctx.hypotheses)}",
+            f"Evidence already collected by the team (don't duplicate):\n{render_evidence(ctx.evidence, 30)}",
+            f"Known gaps:\n{render_gaps(ctx.gaps, 15)}",
+            "Human input:\n" + "\n".join(ctx.human_inputs) if ctx.human_inputs else "",
+            f"Tool-call allowance for this task: {ctx.tool_call_allowance}. When done, call {SUBMIT_TOOL}.",
+        ]
+        return "\n\n".join(p for p in parts if p)
+
+    def __call__(self, task: Task, ctx: WorkerContext, toolbox: ToolBox) -> Outcome:
+        messages: list[BaseMessage] = [SystemMessage(prompts.gatherer_prompt(self.agent)), HumanMessage(self._brief(task, ctx))]
+        usage = Usage()
+        findings: GathererFindings | None = None
+        reminders = 0
+        max_turns = ctx.tool_call_allowance + MAX_SUBMIT_REMINDERS + 2
+        for _ in range(max_turns):
+            ai, u = self.caller.invoke(self.bound, messages)
+            usage = usage + u
+            messages.append(ai)
+            if not ai.tool_calls:
+                if reminders >= MAX_SUBMIT_REMINDERS:
+                    break
+                reminders += 1
+                messages.append(HumanMessage(f"{prompts.GATHERER_REPORT}\nCall {SUBMIT_TOOL} now."))
+                continue
+            for call in ai.tool_calls:
+                if call["name"] == SUBMIT_TOOL:
+                    try:
+                        findings = GathererFindings.model_validate(call["args"])
+                        messages.append(ToolMessage("received", tool_call_id=call["id"]))
+                    except ValidationError as exc:
+                        messages.append(ToolMessage(f"invalid findings: {exc.errors()[:3]}; fix and call again",
+                                                    tool_call_id=call["id"], status="error"))
+                elif call["name"] not in self.tool_names:
+                    messages.append(ToolMessage(f"tool {call['name']!r} is not available to you; use {self.tool_names}",
+                                                tool_call_id=call["id"], status="error"))
+                else:
+                    result = toolbox.call(call["name"], call["args"])
+                    messages.append(ToolMessage(render_tool_result(result), tool_call_id=call["id"]))
+            if findings is not None:
+                break
+            if toolbox.remaining <= 0:
+                messages.append(HumanMessage(f"Tool allowance used up. {prompts.GATHERER_REPORT}\nCall {SUBMIT_TOOL} now."))
+        if findings is None:
+            raise StructuredOutputError(f"{self.agent}: no findings submitted")
+        status = "ok" if not findings.gaps else "partial"
+        return Outcome(task_id=task.task_id, agent=task.agent, status=status,
+                       evidence=findings.evidence, gaps=findings.gaps, usage=usage)
+
+
+def _analysis_brief(ctx: WorkerContext) -> str:
+    verdict = ctx.last_verdict
+    parts = [
+        f"Incident report:\n{render_incident(ctx.incident)}",
+        f"Triage summary: {ctx.triage.summary}" if ctx.triage else "",
+        f"Hypotheses:\n{render_hypotheses(ctx.hypotheses)}",
+        f"Evidence:\n{render_evidence(ctx.evidence)}",
+        f"Gaps (failed tools, data-quality problems, unchecked areas):\n{render_gaps(ctx.gaps)}",
+        f"Previous critic verdict: {verdict.verdict}; issues: {verdict.issues}" if verdict else "",
+        "Human input:\n" + "\n".join(ctx.human_inputs) if ctx.human_inputs else "",
+    ]
+    return "\n\n".join(p for p in parts if p)
+
+
+class LLMReasoner:
+    def __init__(self, caller: _Caller):
+        self.caller = caller
+
+    def __call__(self, task: Task, ctx: WorkerContext) -> Outcome:
+        out, usage = self.caller.structured(ReasoningOutput, [SystemMessage(prompts.REASONER), HumanMessage(_analysis_brief(ctx))])
+        return Outcome(task_id=task.task_id, agent="reasoning", status="ok", assessments=out.assessments, usage=usage)
+
+
+class LLMCritic:
+    def __init__(self, caller: _Caller):
+        self.caller = caller
+
+    def __call__(self, task: Task, ctx: WorkerContext) -> Outcome:
+        brief = _analysis_brief(ctx) + (
+            f"\n\nFurther evidence rounds available after this one: {ctx.critic_rounds_left}. "
+            "If none remain, choose accept, inconclusive or needs_human."
+        )
+        verdict, usage = self.caller.structured(CriticVerdict, [SystemMessage(prompts.CRITIC), HumanMessage(brief)])
+        return Outcome(task_id=task.task_id, agent="critic", status="ok", verdict=verdict, usage=usage)
+
+
+class LLMReporter:
+    def __init__(self, caller: _Caller):
+        self.caller = caller
+
+    def __call__(self, state: InvestigationState) -> ReportNarrative:
+        verdict = state["verdicts"][-1] if state.get("verdicts") else None
+        brief = "\n\n".join(p for p in [
+            f"Incident report:\n{render_incident(state['incident'])}",
+            f"Investigation stopped because: {state.get('stop_reason')}",
+            f"Ranked hypotheses:\n{render_hypotheses(ranked_hypotheses(state))}",
+            f"Evidence:\n{render_evidence(state['evidence'])}",
+            f"Gaps:\n{render_gaps(state['gaps'])}",
+            f"Last critic verdict: {verdict.verdict}; issues: {verdict.issues}" if verdict else "",
+        ] if p)
+        narrative, _ = self.caller.structured(ReportNarrative, [SystemMessage(prompts.REPORTER), HumanMessage(brief)])
+        return narrative
+
+
+def llm_workers(config: dict[Role, ModelSpec], ledger: UsageLedger, models: dict[Role, BaseChatModel] | None = None) -> Workers:
+    """Build all workers. `models` lets tests inject fake chat models per role."""
+    def caller(role: Role) -> _Caller:
+        model = (models or {}).get(role) or build_chat_model(config[role])
+        return _Caller(role, config[role], model, ledger)
+
+    return Workers(
+        planner=LLMPlanner(caller("triage")),
+        gatherers={a: LLMGatherer(a, caller(a)) for a in GATHERERS},
+        reasoner=LLMReasoner(caller("reasoning")),
+        critic=LLMCritic(caller("critic")),
+        reporter=LLMReporter(caller("reporter")),
+    )

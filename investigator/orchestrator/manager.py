@@ -27,6 +27,7 @@ from investigator.schemas import (
     StopReason,
     Task,
     TriagePlan,
+    Usage,
 )
 
 RESOLVED = {"done", "partial", "failed", "skipped"}
@@ -200,7 +201,10 @@ def apply_outcomes(state: InvestigationState) -> dict[str, Any]:
             continue
 
         tool_calls = max(outcome.usage.tool_calls, len(outcome.tool_calls))
-        budget = budget.model_copy(update={"usage": budget.usage + outcome.usage.model_copy(update={"tool_calls": tool_calls})})
+        delta = outcome.usage.model_copy(update={"tool_calls": tool_calls})
+        by_agent = dict(budget.by_agent)
+        by_agent[outcome.agent] = by_agent.get(outcome.agent, Usage()) + delta
+        budget = budget.model_copy(update={"usage": budget.usage + delta, "by_agent": by_agent})
 
         calls = {c.call_id: c for c in outcome.tool_calls}
         for c in outcome.tool_calls:

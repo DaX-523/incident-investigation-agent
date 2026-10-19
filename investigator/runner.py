@@ -11,6 +11,7 @@ from langgraph.types import Command
 
 from dataset.schema import Scenario
 from investigator.graph import RunContext, Workers, build_graph
+from investigator.llm.metering import UsageLedger
 from investigator.orchestrator.manager import init_state
 from investigator.report import InvestigationReport
 from investigator.schemas import InvestigationConfig, Usage
@@ -25,6 +26,8 @@ class RunResult:
     usage: Usage
     tool_calls: int
     latency_s: float
+    by_agent: dict[str, Usage]
+    by_model: dict[str, Usage]
 
 
 def recursion_limit(config: InvestigationConfig) -> int:
@@ -44,12 +47,21 @@ class Investigation:
         checkpointer=None,
         tool_settings: RetrySettings | None = None,
         clock: Callable[[], float] = time.time,
+        ledger: UsageLedger | None = None,
     ):
         self.config = config or InvestigationConfig()
         self.harness = ToolHarness(scenario, settings=tool_settings)
         self.graph = build_graph(workers, checkpointer=checkpointer)
-        self.context = RunContext(harness=self.harness, clock=clock)
-        self.thread = {"configurable": {"thread_id": str(uuid.uuid4())}, "recursion_limit": recursion_limit(self.config)}
+        self.ledger = ledger
+        self.context = RunContext(harness=self.harness, clock=clock, ledger=ledger)
+        self.thread = {
+            "configurable": {"thread_id": str(uuid.uuid4())},
+            "recursion_limit": recursion_limit(self.config),
+            # LangSmith trace labels.
+            "run_name": f"investigation:{scenario.id}",
+            "tags": ["multi_agent", scenario.id],
+            "metadata": {"scenario": scenario.id, "system": "multi_agent", "mode": self.config.mode},
+        }
         self.incident = scenario.incident_report.model_dump(mode="json")
         self._clock = clock
         self._started = clock()
@@ -73,6 +85,8 @@ class Investigation:
             usage=budget.usage,
             tool_calls=len(self.harness.calls),
             latency_s=round(self._clock() - self._started, 3),
+            by_agent=dict(budget.by_agent),
+            by_model=self.ledger.by_model() if self.ledger else {},
         )
 
 

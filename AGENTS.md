@@ -82,6 +82,14 @@ investigator/
   runner.py          Investigation (start/resume, metrics) and investigate()
   checkpoint.py      checkpointers with an explicit msgpack allowlist of our state types
   agents/stubs.py    deterministic LLM-free workers for tests and offline dry runs
+  agents/llm_agents.py  LLM planner, gatherers (tool loop + submit_findings), reasoner, critic, reporter
+  agents/prompts.py  generic system prompts (no scenario-specific content)
+  llm/config.py      per-role model + effort presets (budget default | balanced | quality), env overrides
+  llm/pricing.py     USD price table (unknown models counted as unpriced, never guessed)
+  llm/metering.py    UsageLedger: tokens, cache, thinking, cost per call, by role and by model
+  llm/factory.py     ChatAnthropic/ChatOpenAI construction (effort, refusal fallback on Sonnet/Opus 5.5)
+  __main__.py        CLI: run one scenario, print report + usage/cost breakdown, save to runs/
+  studio.py          LangGraph Studio entry (JSON context -> harness/ledger/workers per run)
   tools/toolbox.py   per-task tool allowance; records tool calls on the worker's behalf
 tests/               pytest suite
 ```
@@ -97,8 +105,15 @@ Retry settings come from env: `TOOL_MAX_RETRIES` (2), `TOOL_TIMEOUT_S` (10), `TO
 ```bash
 uv sync                               # install
 uv run python -m dataset.validate     # validate dataset, print coverage
-uv run pytest                         # tests
+uv run pytest                         # tests (offline; fake LLMs)
+uv run python -m investigator <id> --stub   # offline dry run, no LLM calls
+uv run python -m investigator <id>          # real run; needs ANTHROPIC_API_KEY in .env (see .env.example)
+uv run langgraph dev                         # LangGraph Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
 ```
+
+The Studio entry point is `investigator/studio.py`. Its run context is `{scenario, mode: stub|llm, preset, investigation_mode}`.
+
+Model choice per role lives in `investigator/llm/config.py`. The default preset is `budget` while testing, to keep cost down. Every LLM call is metered (tokens, cache reads, thinking, USD) by role and by model. On Opus/Sonnet 5.5, use `with_structured_output(..., method="json_schema")`, never forced tool choice (400 on these models).
 
 ## Conventions
 

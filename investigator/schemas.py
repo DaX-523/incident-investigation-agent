@@ -58,9 +58,16 @@ class InvestigationConfig(_Model):
 
 
 class Usage(_Model):
+    """Token, cost and call accounting. `input_tokens` includes cache reads/writes (provider total)."""
+
     llm_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = Field(0, description="Thinking tokens; a subset of output_tokens.")
+    cost_usd: float = 0.0
+    unpriced_calls: int = Field(0, description="LLM calls whose model has no price entry (cost not counted).")
     tool_calls: int = 0
     latency_ms: float = 0.0
 
@@ -69,6 +76,11 @@ class Usage(_Model):
             llm_calls=self.llm_calls + other.llm_calls,
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
+            cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
+            reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            cost_usd=round(self.cost_usd + other.cost_usd, 6),
+            unpriced_calls=self.unpriced_calls + other.unpriced_calls,
             tool_calls=self.tool_calls + other.tool_calls,
             latency_ms=round(self.latency_ms + other.latency_ms, 2),
         )
@@ -81,6 +93,7 @@ class Usage(_Model):
 class Budget(_Model):
     started_at: float = Field(description="Epoch seconds when the investigation started.")
     usage: Usage = Usage()
+    by_agent: dict[str, Usage] = {}
     critic_loops: int = 0
     rounds: int = 0
 

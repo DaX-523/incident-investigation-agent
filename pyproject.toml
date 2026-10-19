@@ -4,10 +4,16 @@ version = "0.1.0"
 description = "LangGraph agent for incident root cause analysis"
 requires-python = ">=3.11"
 dependencies = [
+    "langchain>=1.4",
+    "langchain-anthropic>=1.7",
     "langgraph>=1.2",
     "pydantic>=2.8",
+    "python-dotenv>=1.0",
     "pyyaml>=6.0",
 ]
 
 [dependency-groups]
-dev = ["pytest>=8.3"]
+dev = [
+    "langgraph-cli[inmem]>=0.4",
+    "pytest>=8.3",
+]

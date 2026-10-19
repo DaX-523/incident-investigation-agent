@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from langsmith import traceable
 from pydantic import BaseModel, ValidationError
 
 from dataset.schema import Scenario, ToolFault
@@ -95,6 +96,11 @@ class ToolHarness:
         self.close()
 
     def call(self, tool: str, args: dict[str, Any] | None = None) -> ToolResult:
+        # Shows up as a "tool" run in LangSmith traces (no-op unless tracing is enabled).
+        return self._traced_call(tool, args, langsmith_extra={"name": tool})
+
+    @traceable(run_type="tool", name="tool_call")
+    def _traced_call(self, tool: str, args: dict[str, Any] | None = None) -> ToolResult:
         args = dict(args or {})
         started = time.monotonic()
         spec = TOOL_SPECS.get(tool)

@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "investigator": "./investigator/studio.py:graph"
+  },
+  "env": ".env",
+  "python_version": "3.13"
+}

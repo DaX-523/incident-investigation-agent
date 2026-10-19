@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
@@ -30,6 +30,7 @@ from investigator.schemas import (
     Usage,
     failed_outcome,
 )
+from investigator.llm.metering import UsageLedger
 from investigator.tools.harness import ToolHarness
 from investigator.tools.toolbox import ToolBox
 
@@ -65,6 +66,16 @@ class Workers:
 class RunContext:
     harness: ToolHarness
     clock: Callable[[], float] = field(default=time.time)
+    # LLM token/cost ledger shared with the workers (None for LLM-free stubs).
+    ledger: UsageLedger | None = None
+    # Workers resolved per run (used when build_graph() was given none, e.g. LangGraph Studio).
+    workers: Workers | None = None
+
+
+def _charge(budget, agent: str, usage: Usage):
+    by_agent = dict(budget.by_agent)
+    by_agent[agent] = by_agent.get(agent, Usage()) + usage
+    return budget.model_copy(update={"usage": budget.usage + usage, "by_agent": by_agent})
 
 
 # Tool calls the planner may make (e.g. get_topology) before any task exists.
@@ -81,19 +92,40 @@ def fallback_plan(incident: dict) -> TriagePlan:
     )
 
 
-def build_graph(workers: Workers, checkpointer=None):
+def build_graph(
+    workers: Workers | None = None,
+    checkpointer=None,
+    *,
+    context_schema: type = RunContext,
+    bootstrap: Callable[[Any], dict] | None = None,
+):
+    """Compile the investigation graph.
+
+    `workers=None` resolves workers from the run context per run. `bootstrap(context)`, if given,
+    adds an entry node that builds the initial state when the input has no incident (Studio).
+    """
+
+    def _workers(runtime: Runtime[RunContext]) -> Workers:
+        resolved = workers or runtime.context.workers
+        if resolved is None:
+            raise RuntimeError("no workers: pass them to build_graph() or provide them in the run context")
+        return resolved
+
+    def load_incident(state: InvestigationState, runtime: Runtime[RunContext]) -> dict:
+        return {} if state.get("incident") else bootstrap(runtime.context)
+
     def triage(state: InvestigationState, runtime: Runtime[RunContext]) -> dict:
         toolbox = ToolBox(runtime.context.harness, PLANNER_TOOL_ALLOWANCE)
         try:
-            plan = workers.planner(state["incident"], toolbox)
+            plan = _workers(runtime).planner(state["incident"], toolbox)
             errors: list[str] = []
         except Exception as exc:  # recovery: never fail the run on the planner
             logger.warning("planner failed: %s", exc)
             plan, errors = fallback_plan(state["incident"]), [f"planner failed: {type(exc).__name__}: {exc}"]
         update = apply_triage(state, plan)
-        budget = update["budget"]
-        planner_calls = Usage(tool_calls=len(toolbox.records()))
-        update["budget"] = budget.model_copy(update={"usage": budget.usage + planner_calls})
+        ledger = runtime.context.ledger
+        planner_usage = (ledger.total("triage") if ledger else Usage()) + Usage(tool_calls=len(toolbox.records()))
+        update["budget"] = _charge(update["budget"], "triage", planner_usage)
         update["errors"] = update["errors"] + errors
         return update
 
@@ -114,12 +146,13 @@ def build_graph(workers: Workers, checkpointer=None):
             last_error: BaseException | None = None
             for attempt in range(max_attempts):
                 try:
+                    w = _workers(runtime)
                     if agent in GATHERERS:
-                        outcome = workers.gatherers[agent](task, context, toolbox)
+                        outcome = w.gatherers[agent](task, context, toolbox)
                     elif agent == "reasoning":
-                        outcome = workers.reasoner(task, context)
+                        outcome = w.reasoner(task, context)
                     else:
-                        outcome = workers.critic(task, context)
+                        outcome = w.critic(task, context)
                     # Tool calls are recorded by the toolbox, not trusted from the worker.
                     outcome = outcome.model_copy(update={"task_id": task.task_id, "agent": agent,
                                                          "tool_calls": toolbox.records()})
@@ -141,18 +174,21 @@ def build_graph(workers: Workers, checkpointer=None):
         })
         return {"human_inputs": [str(answer)]}
 
-    def report(state: InvestigationState) -> dict:
+    def report(state: InvestigationState, runtime: Runtime[RunContext]) -> dict:
         narrative = None
         errors = list(state["errors"])
-        if workers.reporter is not None:
+        ledger = runtime.context.ledger
+        reporter = _workers(runtime).reporter
+        if reporter is not None:
             try:
-                narrative = workers.reporter(state)
+                narrative = reporter(state)
             except Exception as exc:
                 logger.warning("reporter failed: %s", exc)
                 errors.append(f"reporter failed: {type(exc).__name__}: {exc}; deterministic report used")
-        return {"report": build_report(state, narrative), "phase": "done", "errors": errors}
+        budget = _charge(state["budget"], "reporter", ledger.total("reporter")) if ledger else state["budget"]
+        return {"report": build_report(state, narrative), "phase": "done", "errors": errors, "budget": budget}
 
-    graph = StateGraph(InvestigationState, context_schema=RunContext)
+    graph = StateGraph(InvestigationState, context_schema=context_schema)
     graph.add_node("triage", triage)
     graph.add_node("orchestrator", orchestrator,
                    destinations=(*GATHERERS, "reasoning", "critic", "human", "report"))
@@ -162,7 +198,12 @@ def build_graph(workers: Workers, checkpointer=None):
     graph.add_node("human", human_review)
     graph.add_node("report", report)
 
-    graph.add_edge(START, "triage")
+    if bootstrap is not None:
+        graph.add_node("load_incident", load_incident)
+        graph.add_edge(START, "load_incident")
+        graph.add_edge("load_incident", "triage")
+    else:
+        graph.add_edge(START, "triage")
     graph.add_edge("triage", "orchestrator")
     graph.add_edge("human", "orchestrator")
     graph.add_edge("report", END)
