@@ -64,8 +64,26 @@ dataset/
   validate.py        consistency checks + coverage matrix
   scenarios/         inc-NNN.yaml: report, environment, tool_faults
   answer_keys/       inc-NNN.yaml: metadata, ground_truth (evaluators only)
+investigator/
+  scenario.py        loads scenarios only (never answer keys)
+  tools/
+    models.py        Pydantic tool inputs/outputs, ToolResult / ToolError / DataQuality
+    registry.py      TOOL_SPECS: name -> models, description, result field
+    backend.py       simulated backends (metrics, logs, traces, changes, ...) over a scenario
+    faults.py        applies scenario tool_faults (timeout, error, empty, stale, truncated)
+    harness.py       ToolHarness: validation, timeout, bounded retries w/ backoff+jitter, quality flags, call log
+  schemas.py         shared state (InvestigationState), Task, Outcome, Evidence, Hypothesis, CriticVerdict, BudgetLimits
+  report.py          InvestigationReport, shared by multi-agent graph and baseline
+  orchestrator/
+    manager.py       deterministic single writer: apply_triage, apply_outcomes, evidence_gate, check_limits, decide/step
 tests/               pytest suite
 ```
+
+Every tool call goes through `ToolHarness.call(tool, args) -> ToolResult`. It never raises. Agents must not call backends directly or see `scenario.tool_faults`.
+
+Workers never write investigation state. They return one `Outcome` to the `outcomes` mailbox, and `orchestrator/manager.py` is the only code that turns outcomes into state. Evidence must cite tool `call_id`s from the worker's own calls, or it is dropped.
+
+Retry settings come from env: `TOOL_MAX_RETRIES` (2), `TOOL_TIMEOUT_S` (10), `TOOL_BACKOFF_BASE_S` (0.2), `TOOL_BACKOFF_CAP_S` (2.0).
 
 ## Commands
 

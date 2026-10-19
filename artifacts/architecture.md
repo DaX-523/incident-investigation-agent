@@ -1,6 +1,6 @@
 # Architecture (Mermaid)
 
-Based on `planning.md` and `initial_architecture.png`, with the agreed review decisions applied: orchestrator as the single writer, three parallel gatherers, and critic loops routed through the orchestrator. The **single-agent baseline is required** (section 4). Only the **evaluator** is optional/deferred.
+Based on `planning.md` and `initial_architecture.png`, with the agreed review decisions applied: orchestrator as the single writer, three parallel gatherers, and critic loops routed through the orchestrator. The **single-agent baseline is required**. Only the **evaluator** is optional/deferred.
 
 ## 1. Agent graph
 
@@ -129,6 +129,8 @@ Both systems record tool calls, tokens and latency per run. That's what the comp
 | Critic loops | 3 | go to evidence gate, then report with gaps listed |
 | Tool retries per call | 2 (`TOOL_MAX_RETRIES`) | tool result becomes an evidence gap |
 | Tool timeout | 10s (`TOOL_TIMEOUT_S`) | retried, then a gap |
-| Tool calls per run | TBD (step 2) | stop gathering and report |
-| Wall clock / tokens | TBD (step 2) | stop gathering and report |
+| Tool calls per run | 60 (`BudgetLimits.max_tool_calls`) | stop gathering and report |
+| Wall clock / tokens | 600s / 400k tokens | stop gathering and report |
+| Tasks per round | 6 | extra planner/critic requests dropped (logged) |
+| Evidence gate | top 3 hypotheses need evidence + all 3 gatherers ran | targeted gap tasks while loops remain |
 | LangGraph `recursion_limit` | backstop | hard stop |
