@@ -32,17 +32,18 @@ from dataset.schema import AnswerKey
 from dataset.validate import ANSWER_KEYS_DIR, load_answer_key
 from evals.scoring import Score, score_run
 from investigator.scenario import load_scenario, scenario_ids
+from investigator.llm.config import PROVIDER_MODELS, resolve_provider
 from investigator.systems import SYSTEMS, model_labels, resolve_preset, result_to_dict, run_system
 
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 log = logging.getLogger("evals.compare")
 
 
-def run_one(scenario_id: str, system: str, preset: str, runs_dir: Path) -> Path:
+def run_one(scenario_id: str, system: str, preset: str, runs_dir: Path, provider: str | None = None) -> Path:
     path = runs_dir / f"{scenario_id}-{system}.json"
-    record: dict[str, Any] = {"scenario": scenario_id, "system": system, "preset": preset}
+    record: dict[str, Any] = {"scenario": scenario_id, "system": system, "preset": preset, "provider": provider}
     try:
-        record |= result_to_dict(run_system(load_scenario(scenario_id), system, preset))
+        record |= result_to_dict(run_system(load_scenario(scenario_id), system, preset, provider=provider))
     except Exception as exc:  # one broken run must not sink the sweep
         record |= {"report": None, "error": f"{type(exc).__name__}: {exc}", "traceback": traceback.format_exc()}
     path.write_text(json.dumps(record, indent=2, default=str))
@@ -132,7 +133,8 @@ def _fmt(v: Any) -> str:
 
 def render_markdown(meta: dict[str, Any], agg: dict, tags: dict, scores: list[Score]) -> str:
     systems = [s for s in SYSTEMS if s in agg]
-    lines = [f"# Multi-agent vs single-agent baseline ({meta['preset']})", "",
+    setup = meta["preset"] + (f", {meta['provider']}" if meta.get("provider") else "")
+    lines = [f"# Multi-agent vs single-agent baseline ({setup})", "",
              f"Generated {meta['generated_at']}. Scenarios: {meta['scenarios']}. "
              "Scored deterministically against `dataset/answer_keys/` (see `evals/scoring.py`).", ""]
     for system, labels in meta["models"].items():
@@ -191,13 +193,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--systems", nargs="+", choices=SYSTEMS, default=list(SYSTEMS))
     parser.add_argument("--scenarios", nargs="+", choices=scenario_ids(), default=scenario_ids())
     parser.add_argument("--preset", choices=["budget", "balanced", "quality"], default=None)
+    parser.add_argument("--provider", choices=sorted(PROVIDER_MODELS), default=None,
+                        help="model provider (default: INVESTIGATOR_PROVIDER, then anthropic)")
     parser.add_argument("--stub", action="store_true", help="deterministic stub workers, no LLM calls")
     parser.add_argument("--parallel", type=int, default=1, help="concurrent runs (inflates per-run latency)")
     parser.add_argument("--out", type=Path, help="results directory; existing runs in it are skipped")
     parser.add_argument("--rescore", type=Path, metavar="DIR", help="re-score saved runs in DIR; no model calls")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
-    for noisy in ("httpx", "httpx2", "anthropic"):
+    for noisy in ("httpx", "httpx2", "anthropic", "openai"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.rescore:
@@ -205,22 +209,24 @@ def main(argv: list[str] | None = None) -> int:
         meta = json.loads((out / "results.json").read_text())["meta"] if (out / "results.json").exists() else {}
     else:
         preset = resolve_preset(args.preset, args.stub)
+        provider = None if args.stub else resolve_provider(args.provider)
         out = args.out or RESULTS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{preset}"
         runs_dir = out / "runs"
         runs_dir.mkdir(parents=True, exist_ok=True)
         jobs = [(sid, system) for sid in args.scenarios for system in args.systems
                 if not (runs_dir / f"{sid}-{system}.json").exists()]
-        log.info("%s: %d runs to do (%d already saved), preset=%s", out, len(jobs),
-                 len(args.scenarios) * len(args.systems) - len(jobs), preset)
+        log.info("%s: %d runs to do (%d already saved), preset=%s, provider=%s", out, len(jobs),
+                 len(args.scenarios) * len(args.systems) - len(jobs), preset, provider)
         with ThreadPoolExecutor(max_workers=max(1, args.parallel)) as pool:
-            futures = {pool.submit(run_one, sid, system, preset, runs_dir): (sid, system) for sid, system in jobs}
+            futures = {pool.submit(run_one, sid, system, preset, runs_dir, provider): (sid, system)
+                       for sid, system in jobs}
             for i, future in enumerate(as_completed(futures), 1):
                 run = json.loads(future.result().read_text())
                 cost = (run.get("usage") or {}).get("cost_usd", 0.0)
                 log.info("[%d/%d] %s/%s %s %.1fs $%.4f", i, len(jobs), *futures[future],
                          run.get("error") or (run["report"] or {}).get("outcome"), run.get("latency_s", 0.0), cost)
-        meta = {"preset": preset, "parallel": args.parallel,
-                "models": {s: model_labels(s, preset) for s in args.systems}}
+        meta = {"preset": preset, "provider": provider, "parallel": args.parallel,
+                "models": {s: model_labels(s, preset, provider) for s in args.systems}}
 
     meta |= {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
              "scenarios": len({p.name.rsplit("-", 1)[0] for p in (out / "runs").glob("*.json")})}

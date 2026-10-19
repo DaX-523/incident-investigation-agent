@@ -17,18 +17,22 @@ def resolve_preset(preset: str | None, stub: bool) -> str:
     return "stub" if stub else preset or os.environ.get("INVESTIGATOR_PRESET", "budget")
 
 
-def model_labels(system: System, preset: str) -> dict[str, str]:
+def model_labels(system: System, preset: str, provider: str | None = None) -> dict[str, str]:
     if preset == "stub":
         return {}
     from investigator.llm.config import load_model_config
 
-    config = load_model_config(preset)
+    config = load_model_config(preset, provider=provider)
     roles = ["baseline"] if system == "baseline" else [r for r in config if r != "baseline"]
     return {role: f"{config[role].model}/{config[role].effort}" for role in roles}
 
 
-def run_system(scenario: Scenario, system: System, preset: str, config: InvestigationConfig | None = None) -> RunResult:
-    """preset "stub" runs the deterministic offline workers; anything else is an LLM preset."""
+def run_system(scenario: Scenario, system: System, preset: str, config: InvestigationConfig | None = None,
+               provider: str | None = None) -> RunResult:
+    """preset "stub" runs the deterministic offline workers; anything else is an LLM preset.
+
+    `provider` (anthropic | openai) defaults to INVESTIGATOR_PROVIDER, then anthropic.
+    """
     config = config or InvestigationConfig()
     if preset == "stub":
         from investigator.agents.stubs import StubBaselineModel, stub_workers
@@ -42,7 +46,7 @@ def run_system(scenario: Scenario, system: System, preset: str, config: Investig
     from investigator.llm.config import load_model_config
     from investigator.llm.metering import UsageLedger
 
-    models = load_model_config(preset)
+    models = load_model_config(preset, provider=provider)
     ledger = UsageLedger()
     if system == "baseline":
         from investigator.agents.llm_agents import _Caller

@@ -10,6 +10,17 @@ The architecture is planned step by step with the user. Do not invent the agent 
 
 ## Assignment requirements (source of truth)
 
+### A. Multi-agent architecture
+At least five distinct agents:
+- **Orchestrator**: plans and coordinates the investigation.
+- **Observability Agent**: investigates logs and metrics.
+- **Dependency Agent**: examines deployments, configuration changes and service dependencies.
+- **Reasoning Agent**: develops and compares competing root-cause hypotheses.
+- **Critic Agent**: challenges conclusions and requests further investigation when evidence is insufficient.
+- **Reporting Agent**: produces the final investigation report and remediation recommendations.
+
+Agents must exchange structured results and genuinely collaborate. Simply chaining LLM calls with different prompts is insufficient. The critic's judgment is an agent decision; don't replace it with fixed rules.
+
 ### B. Tool use
 - Implement tools for querying **logs, metrics, deployment history, service dependencies, and historical incidents** (this repo also has traces, infra events, alerts, runbooks, external reports).
 - Tools have **structured inputs and outputs** (Pydantic models), **error handling**, and **simulated failures** such as timeouts and incomplete results.
@@ -115,15 +126,17 @@ uv run pytest                         # tests (offline; fake LLMs)
 uv run python -m investigator <id> --stub   # offline dry run, no LLM calls
 uv run python -m investigator <id>          # real run; needs ANTHROPIC_API_KEY in .env (see .env.example)
 uv run python -m investigator <id> --system baseline   # single-agent baseline
+uv run python -m investigator <id> --provider openai   # same presets on OpenAI models (needs OPENAI_API_KEY)
 uv run langgraph dev                         # LangGraph Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
 uv run python -m evals.compare --stub          # offline comparison dry run
 uv run python -m evals.compare --preset budget --parallel 3   # live: all scenarios x both systems (costs money)
+uv run python -m evals.compare --provider openai --scenarios inc-003 inc-008   # subset on OpenAI
 uv run python -m evals.compare --rescore evals/results/<dir> # re-score saved runs, no model calls
 ```
 
-The Studio entry point is `investigator/studio.py`. Its run context is `{scenario, mode: stub|llm, preset, investigation_mode}`.
+The Studio entry point is `investigator/studio.py`. Its run context is `{scenario, mode: stub|llm, preset, provider, investigation_mode}`.
 
-Model choice per role lives in `investigator/llm/config.py`. The default preset is `budget` while testing, to keep cost down. Every LLM call is metered (tokens, cache reads, thinking, USD) by role and by model. Prompt caching is on only for multi-turn tool loops (gatherers, baseline): `build_chat_model(spec, cache=True)`. The `max_tokens` budget counts cache reads, so caching cuts cost and latency but not budget use. On Opus/Sonnet 5.5, use `with_structured_output(..., method="json_schema")`, never forced tool choice (400 on these models).
+Model choice per role lives in `investigator/llm/config.py`: a preset gives each role a size tier, and the provider (`INVESTIGATOR_PROVIDER` or `--provider`: anthropic | openai) fills the tier with a model. The default preset is `budget` while testing, to keep cost down. Every LLM call is metered (tokens, cache reads, thinking, USD) by role and by model. Prompt caching is on only for multi-turn tool loops (gatherers, baseline): `build_chat_model(spec, cache=True)`. The `max_tokens` budget counts cache reads, so caching cuts cost and latency but not budget use. On Opus/Sonnet 5.5, use `with_structured_output(..., method="json_schema")`, never forced tool choice (400 on these models).
 
 ## Conventions
 

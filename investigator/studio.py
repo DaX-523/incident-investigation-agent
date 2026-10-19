@@ -28,6 +28,7 @@ class StudioContext(BaseModel):
     scenario: ScenarioId = Field(default=scenario_ids()[0], description="Incident scenario to investigate.")  # type: ignore[valid-type]
     mode: Literal["stub", "llm"] = Field("stub", description="stub = deterministic, no LLM calls; llm = real models.")
     preset: Literal["budget", "balanced", "quality"] = Field("budget", description="Model preset when mode=llm.")
+    provider: Literal["anthropic", "openai"] = Field("anthropic", description="Model provider when mode=llm.")
     investigation_mode: Literal["interactive", "eval"] = Field(
         "interactive", description="interactive pauses for human review when the critic asks; eval never pauses."
     )
@@ -45,7 +46,7 @@ class StudioContext(BaseModel):
             from investigator.llm.config import load_model_config
             from investigator.llm.factory import build_chat_model
 
-            config = load_model_config(self.preset)
+            config = load_model_config(self.preset, provider=self.provider)
             self._ledger = UsageLedger()
             self._workers = llm_workers(config, self._ledger)
             spec = config["baseline"]

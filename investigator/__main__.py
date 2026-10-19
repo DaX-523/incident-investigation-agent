@@ -20,6 +20,7 @@ from dotenv import load_dotenv
 from investigator.runner import RunResult
 from investigator.scenario import load_scenario, scenario_ids
 from investigator.schemas import InvestigationConfig, Usage
+from investigator.llm.config import PROVIDER_MODELS
 from investigator.systems import SYSTEMS, model_labels, resolve_preset, result_to_dict, run_system
 
 RUNS_DIR = Path(__file__).resolve().parents[1] / "runs"
@@ -74,14 +75,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--preset", choices=["budget", "balanced", "quality"], default=None)
     parser.add_argument("--stub", action="store_true", help="offline run with deterministic stub workers")
     parser.add_argument("--system", choices=SYSTEMS, default="multi_agent")
+    parser.add_argument("--provider", choices=sorted(PROVIDER_MODELS), default=None,
+                        help="model provider (default: INVESTIGATOR_PROVIDER, then anthropic)")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     preset = resolve_preset(args.preset, args.stub)
-    if labels := model_labels(args.system, preset):
+    if labels := model_labels(args.system, preset, args.provider):
         print("models:", labels)
-    result = run_system(load_scenario(args.scenario), args.system, preset, InvestigationConfig())
+    result = run_system(load_scenario(args.scenario), args.system, preset, InvestigationConfig(), args.provider)
     print_result(result)
     print(f"\nsaved: {save(result, args.scenario, f'{args.system}-{preset}')}")
     return 0

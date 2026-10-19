@@ -143,8 +143,11 @@ class _Caller:
         self.role, self.spec, self.model, self.ledger = role, spec, model, ledger
 
     def _check(self, message: AIMessage) -> None:
-        if (message.response_metadata or {}).get("stop_reason") == "refusal":
-            raise LLMRefusal(f"{self.role}: model declined the request ({message.response_metadata.get('stop_details')})")
+        meta = message.response_metadata or {}
+        if meta.get("stop_reason") == "refusal":  # Anthropic
+            raise LLMRefusal(f"{self.role}: model declined the request ({meta.get('stop_details')})")
+        if message.additional_kwargs.get("refusal") or meta.get("finish_reason") == "content_filter":  # OpenAI
+            raise LLMRefusal(f"{self.role}: model declined the request ({message.additional_kwargs.get('refusal')})")
 
     def invoke(self, runnable, messages: list[BaseMessage]) -> tuple[AIMessage, Usage]:
         started = time.monotonic()

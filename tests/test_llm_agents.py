@@ -11,7 +11,7 @@ from investigator.agents.llm_agents import (
     llm_workers,
     render_tool_result,
 )
-from investigator.llm.config import PRESETS, load_model_config
+from investigator.llm.config import PRESETS, PROVIDER_MODELS, TIERS, ModelSpec, load_model_config
 from investigator.llm.factory import build_chat_model
 from investigator.llm.metering import UsageLedger
 from investigator.llm.pricing import cost_usd
@@ -48,13 +48,46 @@ def test_cost_math_with_cache_and_long_prompt_tier():
     assert cost_usd("some-unknown-model", 1000, 1000) is None
 
 
-TIER = {"claude-opus-5-5": 3, "claude-sonnet-5-5": 2, "claude-haiku-5-5": 1}
-
-
 def test_budget_preset_is_one_tier_below_balanced():
-    for role, spec in PRESETS["budget"].items():
-        expected = max(1, TIER[PRESETS["balanced"][role].model] - 1)
-        assert TIER[spec.model] == expected, role
+    for role, (tier, _) in PRESETS["budget"].items():
+        expected = TIERS[max(0, TIERS.index(PRESETS["balanced"][role][0]) - 1)]
+        assert tier == expected, role
+
+
+def test_provider_switch_fills_the_same_tiers():
+    anthropic = load_model_config("budget", env={})
+    openai = load_model_config("budget", env={"INVESTIGATOR_PROVIDER": "openai"})
+    assert {s.provider for s in openai.values()} == {"openai"}
+    for role, (tier, effort) in PRESETS["budget"].items():
+        assert anthropic[role].model == PROVIDER_MODELS["anthropic"][tier]
+        assert openai[role].model == PROVIDER_MODELS["openai"][tier] and openai[role].effort == effort
+    # the explicit argument wins over the env var, and per-role overrides still apply on top
+    config = load_model_config("budget", env={"INVESTIGATOR_PROVIDER": "openai", "MODEL_CRITIC": "anthropic:claude-opus-5-5"},
+                               provider="anthropic")
+    assert config["reasoning"].provider == "anthropic" and config["critic"].model == "claude-opus-5-5"
+    with pytest.raises(ValueError):
+        load_model_config(env={"INVESTIGATOR_PROVIDER": "nope"})
+
+
+def test_openai_models_get_mapped_effort_and_no_anthropic_options(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+    model = build_chat_model(ModelSpec(provider="openai", model="o3", effort="max"), cache=True)
+    # Responses API: Chat Completions rejects tools + reasoning effort on gpt-5.x
+    assert model.use_responses_api and model.reasoning == {"effort": "high"} and model.model_name == "o3"
+
+
+def test_openai_refusal_raises():
+    caller = _Caller("critic", load_model_config(env={})["critic"], FakeModel(), UsageLedger())
+    refused = ai(content="")
+    refused.additional_kwargs["refusal"] = "I can't help with that."
+    with pytest.raises(LLMRefusal):
+        caller._check(refused)
+
+
+def test_prices_match_dated_snapshots_but_not_other_models():
+    assert cost_usd("o3-2025-04-16", 1_000_000, 1_000_000) == pytest.approx(2.00 + 8.00)
+    assert cost_usd("gpt-5.4-2026-03-05", 0, 1_000_000) == pytest.approx(15.00)
+    assert cost_usd("o3-pro", 1000, 1000) is None
 
 
 def test_default_preset_is_budget_and_env_overrides_apply():

@@ -9,6 +9,8 @@ from investigator.llm.config import ModelSpec
 # Server-side refusal fallback: supported on these Claude models (not Haiku 5.5).
 _FALLBACK_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5")
 _FALLBACK_BETA = "server-side-fallback-2026-07-01"
+# OpenAI reasoning models accept low / medium / high; our higher levels map to high.
+_OPENAI_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
 
 
 def build_chat_model(spec: ModelSpec, *, cache: bool = False, timeout_s: float = 120.0, max_retries: int = 2) -> BaseChatModel:
@@ -34,9 +36,16 @@ def build_chat_model(spec: ModelSpec, *, cache: bool = False, timeout_s: float =
             **kwargs,
         )
     if spec.provider == "openai":
-        try:
-            from langchain_openai import ChatOpenAI
-        except ImportError as exc:
-            raise RuntimeError("OpenAI roles need `uv add langchain-openai` and OPENAI_API_KEY") from exc
-        return ChatOpenAI(model=spec.model, reasoning_effort=spec.effort, max_retries=max_retries, timeout=timeout_s)
+        from langchain_openai import ChatOpenAI
+
+        # Responses API: Chat Completions rejects function tools combined with reasoning effort on
+        # gpt-5.x. OpenAI caches long prefixes automatically, so `cache` needs no flag here.
+        return ChatOpenAI(
+            model=spec.model,
+            use_responses_api=True,
+            reasoning={"effort": _OPENAI_EFFORT[spec.effort]},
+            max_tokens=spec.max_tokens,
+            max_retries=max_retries,
+            timeout=timeout_s,
+        )
     raise ValueError(f"unsupported provider {spec.provider!r}")

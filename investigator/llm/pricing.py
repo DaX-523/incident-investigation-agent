@@ -1,11 +1,13 @@
 """USD prices per million tokens, used to cost every LLM call.
 
-Snapshot of Anthropic first-party list prices (2026-10-06). Verify before quoting
-numbers externally; unknown models are counted as `unpriced_calls`, never guessed.
+Snapshots of first-party list prices: Anthropic (2026-10-06); OpenAI standard tier from
+developers.openai.com/api/docs/models/<model> (2026-10-19). Verify before quoting numbers
+externally; unknown models are counted as `unpriced_calls`, never guessed.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 
@@ -26,17 +28,21 @@ PRICES: dict[str, Price] = {
     # at the standard 0.1x read / 1.25x write multipliers (not separately published in our source).
     "claude-haiku-5-5": Price(input=0.10, output=0.50, cache_read=0.01, cache_write=0.125,
                               long_prompt=(100_000, 0.50, 2.50)),
-    # OpenAI models are added once the key and current price list are confirmed.
+    # OpenAI has no cache-write charge, so writes are priced as plain input.
+    # gpt-5.4: prompts over 272K input tokens cost 2x input and 1.5x output.
+    "gpt-5.4": Price(input=2.50, output=15.00, cache_read=0.25, cache_write=2.50,
+                     long_prompt=(272_000, 5.00, 22.50)),
+    "gpt-5.4-mini": Price(input=0.75, output=4.50, cache_read=0.075, cache_write=0.75),
+    "o3": Price(input=2.00, output=8.00, cache_read=0.50, cache_write=2.00),
 }
+
+# Snapshot suffixes providers append to the model id they report, e.g. "o3-2025-04-16".
+_DATED = re.compile(r"-(\d{4}-\d{2}-\d{2}|\d{8})$")
 
 
 def _lookup(model: str) -> Price | None:
-    if model in PRICES:
-        return PRICES[model]
-    for name, price in PRICES.items():  # tolerate dated/suffixed ids
-        if model.startswith(name):
-            return price
-    return None
+    # Exact id or a dated snapshot of it; never a prefix, so "o3-pro" is not priced as "o3".
+    return PRICES.get(model) or PRICES.get(_DATED.sub("", model))
 
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int, cache_read: int = 0, cache_write: int = 0) -> float | None:
