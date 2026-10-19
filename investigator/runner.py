@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from langgraph.types import Command
@@ -16,6 +16,7 @@ from investigator.orchestrator.manager import init_state
 from investigator.report import InvestigationReport
 from investigator.schemas import InvestigationConfig, Usage
 from investigator.tools.harness import RetrySettings, ToolHarness
+from investigator.tools.models import ToolResult
 
 
 @dataclass
@@ -28,6 +29,7 @@ class RunResult:
     latency_s: float
     by_agent: dict[str, Usage]
     by_model: dict[str, Usage]
+    calls: list[ToolResult] = field(default_factory=list)  # harness log, for grounding checks
 
 
 def recursion_limit(config: InvestigationConfig) -> int:
@@ -87,6 +89,7 @@ class Investigation:
             latency_s=round(self._clock() - self._started, 3),
             by_agent=dict(budget.by_agent),
             by_model=self.ledger.by_model() if self.ledger else {},
+            calls=self.harness.calls,
         )
 
 

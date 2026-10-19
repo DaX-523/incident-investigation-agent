@@ -354,4 +354,5 @@ def run_baseline(
         latency_s=round(clock() - started, 3),
         by_agent={"baseline": usage},
         by_model=ledger.by_model() if ledger else {},
+        calls=harness.calls,
     )

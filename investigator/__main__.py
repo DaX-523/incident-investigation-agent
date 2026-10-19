@@ -17,9 +17,10 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from investigator.runner import RunResult, investigate
+from investigator.runner import RunResult
 from investigator.scenario import load_scenario, scenario_ids
 from investigator.schemas import InvestigationConfig, Usage
+from investigator.systems import SYSTEMS, model_labels, resolve_preset, result_to_dict, run_system
 
 RUNS_DIR = Path(__file__).resolve().parents[1] / "runs"
 
@@ -59,20 +60,10 @@ def print_result(result: RunResult) -> None:
     print(f"latency: {result.latency_s:.1f}s | tool calls executed: {result.tool_calls}")
 
 
-def save(result: RunResult, scenario_id: str, preset: str) -> Path:
+def save(result: RunResult, scenario_id: str, label: str) -> Path:
     RUNS_DIR.mkdir(exist_ok=True)
-    path = RUNS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{scenario_id}-{preset}.json"
-    path.write_text(json.dumps({
-        "scenario": scenario_id,
-        "preset": preset,
-        "report": result.report.model_dump(mode="json") if result.report else None,
-        "usage": result.usage.model_dump(),
-        "by_agent": {k: v.model_dump() for k, v in result.by_agent.items()},
-        "by_model": {k: v.model_dump() for k, v in result.by_model.items()},
-        "tool_calls": result.tool_calls,
-        "latency_s": result.latency_s,
-        "errors": result.state.get("errors", []),
-    }, indent=2, default=str))
+    path = RUNS_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-{scenario_id}-{label}.json"
+    path.write_text(json.dumps({"scenario": scenario_id, "preset": label, **result_to_dict(result)}, indent=2, default=str))
     return path
 
 
@@ -82,47 +73,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scenario", choices=scenario_ids())
     parser.add_argument("--preset", choices=["budget", "balanced", "quality"], default=None)
     parser.add_argument("--stub", action="store_true", help="offline run with deterministic stub workers")
-    parser.add_argument("--system", choices=["multi_agent", "baseline"], default="multi_agent")
+    parser.add_argument("--system", choices=SYSTEMS, default="multi_agent")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
-    scenario = load_scenario(args.scenario)
-    baseline = args.system == "baseline"
-    if args.stub:
-        from investigator.agents.stubs import StubBaselineModel, stub_workers
-
-        preset = "stub"
-        if baseline:
-            from investigator.baseline import run_baseline
-
-            result = run_baseline(scenario, StubBaselineModel(), InvestigationConfig())
-        else:
-            result = investigate(scenario, stub_workers(), InvestigationConfig())
-    else:
-        import os
-
-        from investigator.llm.config import load_model_config
-        from investigator.llm.metering import UsageLedger
-
-        preset = args.preset or os.environ.get("INVESTIGATOR_PRESET", "budget")
-        config = load_model_config(preset)
-        ledger = UsageLedger()
-        if baseline:
-            from investigator.agents.llm_agents import _Caller
-            from investigator.baseline import LLMBaselineModel, run_baseline
-            from investigator.llm.factory import build_chat_model
-
-            spec = config["baseline"]
-            print("model:", f"{spec.model}/{spec.effort}")
-            model = LLMBaselineModel(_Caller("baseline", spec, build_chat_model(spec), ledger))
-            result = run_baseline(scenario, model, InvestigationConfig(), ledger=ledger)
-        else:
-            from investigator.agents.llm_agents import llm_workers
-
-            print("models:", {role: f"{s.model}/{s.effort}" for role, s in config.items() if role != "baseline"})
-            result = investigate(scenario, llm_workers(config, ledger), InvestigationConfig(), ledger=ledger)
-
+    preset = resolve_preset(args.preset, args.stub)
+    if labels := model_labels(args.system, preset):
+        print("models:", labels)
+    result = run_system(load_scenario(args.scenario), args.system, preset, InvestigationConfig())
     print_result(result)
     print(f"\nsaved: {save(result, args.scenario, f'{args.system}-{preset}')}")
     return 0

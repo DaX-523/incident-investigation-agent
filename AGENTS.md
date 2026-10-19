@@ -92,6 +92,11 @@ investigator/
   studio.py          LangGraph Studio entry (JSON context -> harness/ledger/workers per run); graphs: investigator, baseline
   baseline.py        single-agent baseline: ReAct loop, all tools, same harness/budgets/metering/report schema
   tools/toolbox.py   per-task tool allowance; records tool calls on the worker's behalf
+  systems.py         build + run either system on one scenario (shared by the CLI and evals)
+evals/
+  scoring.py         deterministic scoring of a saved run against its answer key (no LLM)
+  compare.py         multi-agent vs baseline sweep: saves runs, resumes, rescores, writes results.md/json
+  results/<dir>/     runs/*.json, results.json, results.md, optional reviews.yaml (manual review decisions)
 tests/               pytest suite
 ```
 
@@ -111,6 +116,9 @@ uv run python -m investigator <id> --stub   # offline dry run, no LLM calls
 uv run python -m investigator <id>          # real run; needs ANTHROPIC_API_KEY in .env (see .env.example)
 uv run python -m investigator <id> --system baseline   # single-agent baseline
 uv run langgraph dev                         # LangGraph Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
+uv run python -m evals.compare --stub          # offline comparison dry run
+uv run python -m evals.compare --preset budget --parallel 3   # live: all scenarios x both systems (costs money)
+uv run python -m evals.compare --rescore evals/results/<dir> # re-score saved runs, no model calls
 ```
 
 The Studio entry point is `investigator/studio.py`. Its run context is `{scenario, mode: stub|llm, preset, investigation_mode}`.
