@@ -123,6 +123,49 @@ flowchart LR
 
 Both systems record tool calls, tokens and latency per run. That's what the comparison uses: root-cause accuracy, evidence grounding, tool-call count, latency and token consumption.
 
+## 5. Compiled LangGraph (generated)
+
+Generated from the built graph with `build_graph(...).get_graph().draw_mermaid()`. Dashed edges are dynamic `Command`/`Send` routes chosen by the orchestrator. `triage` is the orchestrator's LLM-planner step, kept as its own node so a planner failure can fall back to default coverage.
+
+```mermaid
+---
+config:
+  flowchart:
+    curve: linear
+---
+graph TD;
+	__start__([<p>__start__</p>]):::first
+	triage(triage)
+	orchestrator(orchestrator)
+	observability(observability)
+	dependency(dependency)
+	change_history(change_history)
+	reasoning(reasoning)
+	critic(critic)
+	human(human)
+	report(report)
+	__end__([<p>__end__</p>]):::last
+	__start__ --> triage;
+	change_history --> orchestrator;
+	critic --> orchestrator;
+	dependency --> orchestrator;
+	human --> orchestrator;
+	observability --> orchestrator;
+	orchestrator -.-> change_history;
+	orchestrator -.-> critic;
+	orchestrator -.-> dependency;
+	orchestrator -.-> human;
+	orchestrator -.-> observability;
+	orchestrator -.-> reasoning;
+	orchestrator -.-> report;
+	reasoning --> orchestrator;
+	triage --> orchestrator;
+	report --> __end__;
+	classDef default fill:#f2f0ff,line-height:1.2
+	classDef first fill-opacity:0
+	classDef last fill:#bfb6fc
+```
+
 ## Termination and limits
 | Limit | Default | When hit |
 |---|---|---|
@@ -132,5 +175,7 @@ Both systems record tool calls, tokens and latency per run. That's what the comp
 | Tool calls per run | 60 (`BudgetLimits.max_tool_calls`) | stop gathering and report |
 | Wall clock / tokens | 600s / 400k tokens | stop gathering and report |
 | Tasks per round | 6 | extra planner/critic requests dropped (logged) |
+| Tool calls per task | 8 | further calls return `budget_exhausted` |
+| Worker attempts | 2 | then `Outcome(failed)`; investigation continues |
 | Evidence gate | top 3 hypotheses need evidence + all 3 gatherers ran | targeted gap tasks while loops remain |
 | LangGraph `recursion_limit` | backstop | hard stop |

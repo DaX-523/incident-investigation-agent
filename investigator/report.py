@@ -59,3 +59,13 @@ class InvestigationReport(_Model):
     questions_for_human: list[str] = []
     evidence_index: list[EvidenceIndexEntry] = []
     stop_reason: StopReason | None = None
+
+
+class ReportNarrative(_Model):
+    """What the reporting agent writes. Structure and evidence come from state, not from the LLM."""
+
+    summary: str
+    root_cause: str | None = None
+    corrective_actions: list[CorrectiveActionOut] = []
+    missing_data: list[str] = []
+    security_findings: list[str] = []

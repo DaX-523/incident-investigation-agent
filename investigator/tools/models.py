@@ -249,7 +249,7 @@ class PastIncidentsOutput(_Model):
 # --- harness envelope ----------------------------------------------------------
 
 
-ErrorKind = Literal["timeout", "unavailable", "invalid_request", "not_found", "internal"]
+ErrorKind = Literal["timeout", "unavailable", "invalid_request", "not_found", "internal", "budget_exhausted"]
 
 
 class ToolError(_Model):

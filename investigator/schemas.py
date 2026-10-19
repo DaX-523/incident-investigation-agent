@@ -46,6 +46,8 @@ class BudgetLimits(_Model):
     max_tokens: int = 400_000
     max_wall_clock_s: float = 600.0
     max_tasks_per_round: int = 6
+    max_tool_calls_per_task: int = 8
+    max_worker_attempts: int = 2
     # Hypotheses (by rank) that must have evidence before the report is allowed.
     gate_top_k: int = 3
 
@@ -262,6 +264,8 @@ class InvestigationState(TypedDict, total=False):
     config: InvestigationConfig
     # Worker mailbox: the ONLY key workers write. List-append reducer is safe under parallel writes.
     outcomes: Annotated[list[Outcome], operator.add]
+    # Human answers (interactive mode); appended only by the human-review node.
+    human_inputs: Annotated[list[str], operator.add]
     # Everything below is written only by the orchestrator.
     outcomes_applied: int
     triage: TriagePlan | None

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "LangGraph agent for incident root cause analysis"
 requires-python = ">=3.11"
 dependencies = [
+    "langgraph>=1.2",
     "pydantic>=2.8",
     "pyyaml>=6.0",
 ]

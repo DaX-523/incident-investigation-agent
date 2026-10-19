@@ -76,6 +76,13 @@ investigator/
   report.py          InvestigationReport, shared by multi-agent graph and baseline
   orchestrator/
     manager.py       deterministic single writer: apply_triage, apply_outcomes, evidence_gate, check_limits, decide/step
+    context.py       read-only WorkerContext/WorkerInput sent to workers via Send
+    report_builder.py  deterministic report assembly (also the fallback when the reporter fails)
+  graph.py           LangGraph wiring; Workers (injected agent callables), RunContext (harness, clock)
+  runner.py          Investigation (start/resume, metrics) and investigate()
+  checkpoint.py      checkpointers with an explicit msgpack allowlist of our state types
+  agents/stubs.py    deterministic LLM-free workers for tests and offline dry runs
+  tools/toolbox.py   per-task tool allowance; records tool calls on the worker's behalf
 tests/               pytest suite
 ```
 

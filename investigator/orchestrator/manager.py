@@ -56,6 +56,7 @@ def init_state(incident: dict[str, Any], config: InvestigationConfig | None = No
         incident=incident,
         config=config or InvestigationConfig(),
         outcomes=[],
+        human_inputs=[],
         outcomes_applied=0,
         triage=None,
         tasks={},
