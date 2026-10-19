@@ -103,3 +103,33 @@ def stub_workers(critic: ScriptedCritic | None = None):
         reasoner=stub_reasoner,
         critic=critic or ScriptedCritic(),
     )
+
+
+class StubBaselineModel:
+    """LLM-free single agent: one parallel tool sweep, then a generic report citing the calls it made."""
+
+    SWEEP = [("get_alerts", {}), ("search_logs", {"level": "WARN"}), ("get_changes", {}), ("get_topology", {})]
+
+    def __call__(self, messages):
+        import json
+
+        from langchain_core.messages import AIMessage, ToolMessage
+
+        from investigator.schemas import Usage
+
+        results = [json.loads(m.content.split("... [investigator truncated")[0]) for m in messages
+                   if isinstance(m, ToolMessage) and str(m.content).startswith("{")]
+        if not results:
+            calls = [{"name": t, "args": a, "id": f"stub-{i}"} for i, (t, a) in enumerate(self.SWEEP)]
+            return AIMessage(content="", tool_calls=calls), Usage(llm_calls=1)
+        ok = [r["call_id"] for r in results if r["ok"]]
+        report = {
+            "outcome": "inconclusive",
+            "summary": "Stub baseline: swept alerts, logs, changes and topology.",
+            "confidence": "low",
+            "hypotheses": [{
+                "rank": 1, "statement": "Reporter's account", "status": "open", "confidence": "low",
+                "supporting": [{"text": f"{len(ok)} tool calls returned data", "call_ids": ok}] if ok else [],
+            }],
+        }
+        return AIMessage(content="", tool_calls=[{"name": "submit_report", "args": report, "id": "stub-submit"}]), Usage(llm_calls=1)

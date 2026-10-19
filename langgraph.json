@@ -1,7 +1,10 @@
 {
-  "dependencies": ["."],
+  "dependencies": [
+    "."
+  ],
   "graphs": {
-    "investigator": "./investigator/studio.py:graph"
+    "investigator": "./investigator/studio.py:graph",
+    "baseline": "./investigator/studio.py:baseline_graph"
   },
   "env": ".env",
   "python_version": "3.13"

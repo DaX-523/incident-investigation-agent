@@ -109,11 +109,11 @@ sequenceDiagram
 
 ## 4. Single-agent baseline (required)
 
-The comparison system: one tool-calling agent with the same `ToolHarness`, tools, budgets and report schema, so the only difference is the orchestration.
+The comparison system: one tool-calling agent (`investigator/baseline.py`) with the same `ToolHarness`, tool rendering, budgets, metering and report schema, so the only difference is the orchestration (no planner, specialists, evidence gate or critic). It's a plain ReAct loop (`start -> agent <-> tools -> finalize`, plus `nudge`/`budget` steps that ask it to submit). It's built on our own loop rather than `create_agent` so tool handling and metering are identical to the multi-agent system. Facts in its report must cite tool `call_id`s and are converted into the same evidence index; fabricated call ids are dropped.
 
 ```mermaid
 flowchart LR
-    IN(["Incident report"]) --> SA["SINGLE AGENT<br/>one tool-calling LLM loop<br/>(create_agent)"]
+    IN(["Incident report"]) --> SA["SINGLE AGENT<br/>ReAct loop: agent, tools, finalize<br/>all 10 tools + submit_report"]
     SA -- "tool calls" --> H[["ToolHarness<br/>same tools, faults, retries"]]
     H -- "ToolResult" --> SA
     SA --> OUT(["Final report<br/>(same schema)"])

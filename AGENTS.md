@@ -89,7 +89,8 @@ investigator/
   llm/metering.py    UsageLedger: tokens, cache, thinking, cost per call, by role and by model
   llm/factory.py     ChatAnthropic/ChatOpenAI construction (effort, refusal fallback on Sonnet/Opus 5.5)
   __main__.py        CLI: run one scenario, print report + usage/cost breakdown, save to runs/
-  studio.py          LangGraph Studio entry (JSON context -> harness/ledger/workers per run)
+  studio.py          LangGraph Studio entry (JSON context -> harness/ledger/workers per run); graphs: investigator, baseline
+  baseline.py        single-agent baseline: ReAct loop, all tools, same harness/budgets/metering/report schema
   tools/toolbox.py   per-task tool allowance; records tool calls on the worker's behalf
 tests/               pytest suite
 ```
@@ -108,6 +109,7 @@ uv run python -m dataset.validate     # validate dataset, print coverage
 uv run pytest                         # tests (offline; fake LLMs)
 uv run python -m investigator <id> --stub   # offline dry run, no LLM calls
 uv run python -m investigator <id>          # real run; needs ANTHROPIC_API_KEY in .env (see .env.example)
+uv run python -m investigator <id> --system baseline   # single-agent baseline
 uv run langgraph dev                         # LangGraph Studio: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
 ```
 

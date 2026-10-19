@@ -3,6 +3,7 @@
     uv run python -m investigator <scenario-id>                 # LLM agents, preset from INVESTIGATOR_PRESET (default budget)
     uv run python -m investigator <scenario-id> --preset balanced
     uv run python -m investigator <scenario-id> --stub          # offline, no LLM calls
+    uv run python -m investigator <scenario-id> --system baseline   # single-agent baseline (same tools/budgets)
 """
 
 from __future__ import annotations
@@ -81,30 +82,49 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("scenario", choices=scenario_ids())
     parser.add_argument("--preset", choices=["budget", "balanced", "quality"], default=None)
     parser.add_argument("--stub", action="store_true", help="offline run with deterministic stub workers")
+    parser.add_argument("--system", choices=["multi_agent", "baseline"], default="multi_agent")
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 
     scenario = load_scenario(args.scenario)
+    baseline = args.system == "baseline"
     if args.stub:
-        from investigator.agents.stubs import stub_workers
+        from investigator.agents.stubs import StubBaselineModel, stub_workers
 
-        result, preset = investigate(scenario, stub_workers(), InvestigationConfig()), "stub"
+        preset = "stub"
+        if baseline:
+            from investigator.baseline import run_baseline
+
+            result = run_baseline(scenario, StubBaselineModel(), InvestigationConfig())
+        else:
+            result = investigate(scenario, stub_workers(), InvestigationConfig())
     else:
         import os
 
-        from investigator.agents.llm_agents import llm_workers
         from investigator.llm.config import load_model_config
         from investigator.llm.metering import UsageLedger
 
         preset = args.preset or os.environ.get("INVESTIGATOR_PRESET", "budget")
         config = load_model_config(preset)
-        print("models:", {role: f"{s.model}/{s.effort}" for role, s in config.items() if role != "baseline"})
         ledger = UsageLedger()
-        result = investigate(scenario, llm_workers(config, ledger), InvestigationConfig(), ledger=ledger)
+        if baseline:
+            from investigator.agents.llm_agents import _Caller
+            from investigator.baseline import LLMBaselineModel, run_baseline
+            from investigator.llm.factory import build_chat_model
+
+            spec = config["baseline"]
+            print("model:", f"{spec.model}/{spec.effort}")
+            model = LLMBaselineModel(_Caller("baseline", spec, build_chat_model(spec), ledger))
+            result = run_baseline(scenario, model, InvestigationConfig(), ledger=ledger)
+        else:
+            from investigator.agents.llm_agents import llm_workers
+
+            print("models:", {role: f"{s.model}/{s.effort}" for role, s in config.items() if role != "baseline"})
+            result = investigate(scenario, llm_workers(config, ledger), InvestigationConfig(), ledger=ledger)
 
     print_result(result)
-    print(f"\nsaved: {save(result, args.scenario, preset)}")
+    print(f"\nsaved: {save(result, args.scenario, f'{args.system}-{preset}')}")
     return 0
 
 
