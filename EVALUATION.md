@@ -31,7 +31,7 @@ where a convincing explanation sits in the first sources checked and the overtur
 or infrastructure events; the evidence gate and the mandatory change sweep make it look there. Every claim
 is grounded in an executed tool call, and it never adopted a red herring or recommended a forbidden action.
 
-**Where it falls short.** Three root causes were graded partial or wrong: inc-005 (named the faulty node but
+**Where it falls short.** Two root causes were graded partial or wrong: inc-005 (named the faulty node but
 not the degraded disk behind it), inc-012 (crawler traffic found, originating change not named). It costs about 7x the baseline and takes
 about twice as long.
 

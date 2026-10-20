@@ -8,37 +8,40 @@ Mapping to the brief's roles: Orchestrator = `triage` (LLM planner) + `orchestra
 
 ```mermaid
 flowchart TD
-    IN(["Incident report"]) --> ORCH
+    IN(["Incident report"]) --> PLAN
 
-    ORCH{{"ORCHESTRATOR<br/>LLM planner: triage, initial hypotheses, tasks<br/>Deterministic manager: apply outcomes, budgets, routing<br/>(only writer of shared state)"}}
+    PLAN["ORCHESTRATOR: LLM planner<br/>sees topology, recent changes in all services,<br/>each specialist's toolset<br/>-> hypotheses + tasks with dependencies"]
+    PLAN --> ORCH
 
-    ORCH -- "Send(task), parallel<br/>initial + targeted re-dispatch" --> OBS["OBSERVABILITY<br/>metrics, logs, traces,<br/>alerts, infra events"]
-    ORCH -- "Send(task)" --> DEP["DEPENDENCY<br/>topology, blast radius"]
-    ORCH -- "Send(task)" --> CHG["CHANGE & HISTORY<br/>deploys, config, flags, migrations,<br/>past incidents, runbooks"]
+    ORCH{{"ORCHESTRATOR: deterministic manager<br/>single writer of shared state<br/>applies outcomes, task dependencies,<br/>budgets, evidence gate, routing"}}
 
-    OBS -- "Outcome" --> MB[("Outcomes mailbox<br/>append-only")]
-    DEP -- "Outcome" --> MB
-    CHG -- "Outcome" --> MB
-    MB --> ORCH
+    ORCH -- "Send(task), in parallel" --> OBS["OBSERVABILITY<br/>metrics, logs, traces,<br/>alerts, infra events"]
+    ORCH -- "Send(task)" --> DEP["DEPENDENCY<br/>topology, blast radius,<br/>dependency health"]
+    ORCH -- "Send(task)" --> CHG["CHANGE HISTORY<br/>always starts with an unfiltered change sweep;<br/>deploys, config, flags, past incidents, runbooks"]
 
-    ORCH -- "evidence snapshot" --> REA["REASONING<br/>reasoning LLM: rank hypotheses,<br/>supporting / contradicting evidence"]
-    REA -- "Outcome: ranked hypotheses" --> MB
+    OBS & DEP & CHG -- "tool calls" --> TH[["Tool harness<br/>validation, timeout, retries + backoff,<br/>simulated faults, data-quality flags"]]
+    OBS & DEP & CHG -- "Outcome: evidence citing own call_ids" --> MB[("Outcomes mailbox<br/>append-only")]
+    MB -- "applied in task order" --> ORCH
 
-    ORCH -- "hypotheses + evidence" --> CRI["CRITIC<br/>challenge conclusions against evidence"]
+    ORCH -- "evidence snapshot" --> REA["REASONING<br/>rank competing hypotheses,<br/>supporting / contradicting evidence"]
+    REA -- "Outcome: ranking" --> MB
+    ORCH -- "ranking + budget left" --> CRI["CRITIC<br/>accept / need more evidence /<br/>inconclusive (must name the blocking gap)"]
     CRI -- "Outcome: verdict" --> MB
+    CRI -. "need more evidence:<br/>targeted tasks, max 3 rounds" .-> ORCH
 
-    ORCH -- "done or limit" --> GATE{"Evidence gate<br/>each top hypothesis has<br/>support or contradiction?"}
-    GATE -- "pass or limit reached" --> REP["REPORTING<br/>ranked hypotheses, evidence ids, confidence,<br/>facts vs assumptions, actions"]
+    ORCH -- "limit hit (tool calls, tokens, time)" --> FIN["Closing pass<br/>rank what was gathered, critic decides;<br/>no more gathering"]
+    FIN --> GATE
+    ORCH -- "critic accepts / inconclusive" --> GATE{"Evidence gate<br/>top hypotheses have evidence,<br/>every specialist ran"}
     GATE -- "missing evidence" --> ORCH
+    GATE -- "pass" --> REP["REPORTING<br/>ranked hypotheses, facts vs assumptions,<br/>confidence, corrective actions"]
     REP --> OUT(["Final report"])
 
-    ORCH -. "needs_human" .-> HUM[/"Human review<br/>interrupt + checkpoint"/]
-    HUM -. "resume with input" .-> ORCH
+    ORCH -. "needs human (interactive)" .-> HUM[/"Human review<br/>interrupt + checkpoint resume"/]
+    HUM -. "answer" .-> ORCH
 
-    OUT -.-> EVAL["EVALUATOR (offline, evals/)<br/>scoring vs answer keys + LLM judge"]
-
-    classDef optional stroke-dasharray: 5 5,color:#888
-    class EVAL optional
+    OUT -.-> EVAL["EVALUATOR (offline, evals/)<br/>answer keys + LLM judge"]
+    classDef offline stroke-dasharray: 5 5,color:#888
+    class EVAL offline
 ```
 
 **Critic verdicts**, all applied by the orchestrator:
