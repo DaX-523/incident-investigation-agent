@@ -34,6 +34,11 @@ PRICES: dict[str, Price] = {
                      long_prompt=(272_000, 5.00, 22.50)),
     "gpt-5.4-mini": Price(input=0.75, output=4.50, cache_read=0.075, cache_write=0.75),
     "o3": Price(input=2.00, output=8.00, cache_read=0.50, cache_write=2.00),
+    "o4-mini": Price(input=1.10, output=4.40, cache_read=0.275, cache_write=1.10),
+    # Standard tier, short context, from developers.openai.com/api/docs/pricing (2026-10-20).
+    # Their long-context rates (2x input, 1.5x output) apply past a threshold the page doesn't state here.
+    "gpt-6-astra": Price(input=10.00, output=50.00, cache_read=1.00, cache_write=12.50),
+    "gpt-6.1-sol": Price(input=2.00, output=10.00, cache_read=0.10, cache_write=2.50),
 }
 
 # Snapshot suffixes providers append to the model id they report, e.g. "o3-2025-04-16".
