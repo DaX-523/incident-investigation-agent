@@ -164,13 +164,17 @@ def test_needs_human_interactive_interrupts_and_resumes_from_checkpoint():
 def test_wall_clock_limit_stops_the_run():
     ticks = iter(range(0, 10_000, 100))  # every clock read advances 100s
     r = run(config=cfg(max_wall_clock_s=150), clock=lambda: float(next(ticks)))
-    assert r.state["stop_reason"] == "max_wall_clock"
-    assert r.report is not None
+    assert r.state["budget"].limit_hit == "max_wall_clock"
+    assert r.report is not None and any("max_wall_clock" in g for g in r.report.gaps)
 
 
 def test_tool_call_budget_stops_the_run():
     r = run(config=cfg(max_tool_calls=4))
-    assert r.state["stop_reason"] == "max_tool_calls"
+    assert r.state["budget"].limit_hit == "max_tool_calls"
+    # After the limit only the closing pass runs (reasoning, critic): no gatherer task is dispatched.
+    after = [t for t in r.state["tasks"].values() if t.round == r.state["budget"].rounds and t.agent in
+             ("observability", "dependency", "change_history") and t.status == "pending"]
+    assert after == [] and r.state["budget"].usage.tool_calls <= 4 + 8  # one in-flight round can finish
 
 
 def test_per_task_tool_allowance_is_enforced():

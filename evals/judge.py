@@ -9,8 +9,9 @@ judge for every run in a comparison so both systems are graded the same way.
 
 from __future__ import annotations
 
+import json
 import os
-from typing import Literal
+from typing import Any, Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, ConfigDict, Field
@@ -20,6 +21,10 @@ from investigator.llm.metering import usage_from_message
 from investigator.report import InvestigationReport
 
 DEFAULT_JUDGE = "openai:gpt-5.4-mini"
+# Bump when PROMPT or JudgeVerdict changes, so cached verdicts from an older rubric are re-graded.
+JUDGE_VERSION = 3
+MAX_RESULT_CHARS = 2_500
+MAX_RESULTS_CHARS = 150_000
 
 
 class JudgeVerdict(BaseModel):
@@ -30,6 +35,8 @@ class JudgeVerdict(BaseModel):
     red_herrings_adopted: list[int] = Field(description="Numbers of the red herrings the report adopts.")
     must_not_violated: list[int] = Field(description="Numbers of the must-not items the report violates.")
     factors_stated: list[int] = Field(description="Numbers of the must-mention factors the report states.")
+    unsupported_claims: list[str] = Field(
+        [], description="Specific factual claims the report presents as observed that no tool result supports.")
 
 
 PROMPT = """\
@@ -41,16 +48,22 @@ from the key; judge the substance.
 root_cause:
 - correct: the report's root cause (or its rank-1 hypothesis if no root cause is stated) is the key's
   root cause: the same originating change or component and the same mechanism.
-- partial: it finds the right mechanism but not the originating change or component, or it names the
-  key's cause only as co-primary with a different cause.
-- wrong: it names a different primary cause; or it mentions the key's cause only as a contributing
-  factor, amplifier, trigger, symptom or side effect; or it makes no root-cause claim.
+- partial: it names the right component and mechanism but misses the specific originating change,
+  or it names the key's cause only as co-primary with a different cause.
+- wrong: it names a different primary cause; or it attributes the right kind of mechanism to a
+  different component (above all one the key lists as a red herring); or it mentions the key's
+  cause only as a contributing factor, amplifier, trigger, symptom or side effect; or it makes no
+  root-cause claim.
 
 red_herrings_adopted: the report presents the claim as the root cause or recommends acting on it as
 its primary fix. Mentioning a claim and rejecting it is not adopting it.
 must_not_violated: the report does what the item forbids, in its root cause or its top-ranked actions.
 factors_stated: the report states the factor's substance. Citing a related metric or log line without
 stating the factor does not count.
+unsupported_claims: compare the report with the INCIDENT REPORT and the TOOL RESULTS, which together are
+everything the investigation was given or observed. List each specific factual claim (a value, setting, default, event or behaviour) that the
+report presents as observed but that no tool result shows. Claims the report labels as assumptions or
+hypotheses are fine. Quote the claim briefly. Return an empty list when tool results are not given.
 
 Use the item numbers shown. Return empty lists when nothing applies."""
 
@@ -83,6 +96,21 @@ def render_report(report: InvestigationReport) -> str:
     ])
 
 
+def render_calls(calls: list[dict[str, Any]] | None) -> str:
+    if not calls:
+        return "(not provided)"
+    budget = max(300, min(MAX_RESULT_CHARS, MAX_RESULTS_CHARS // max(1, len(calls))))
+    lines = []
+    for c in calls:
+        head = f"[{c.get('call_id')}] {c.get('tool')} {json.dumps(c.get('args') or {}, ensure_ascii=False)}"
+        if not c.get("ok"):
+            lines.append(f"{head} -> failed ({c.get('error')})")
+            continue
+        body = json.dumps(c.get("data"), ensure_ascii=False, default=str) if "data" in c else "(result not recorded)"
+        lines.append(f"{head} -> {body[:budget]}{' …' if len(body) > budget else ''}")
+    return "\n".join(lines)
+
+
 def judge_label(env: dict[str, str] | None = None) -> str:
     return (env if env is not None else os.environ).get("JUDGE_MODEL", DEFAULT_JUDGE)
 
@@ -97,10 +125,13 @@ class Judge:
             model = build_chat_model(ModelSpec.parse(ref, "medium", max_tokens=4000))
         self._runnable = model.with_structured_output(JudgeVerdict, method="json_schema", include_raw=True)
 
-    def __call__(self, report: InvestigationReport, key: AnswerKey) -> tuple[JudgeVerdict, float]:
+    def __call__(self, report: InvestigationReport, key: AnswerKey, calls: list[dict[str, Any]] | None = None,
+                 incident: str | None = None) -> tuple[JudgeVerdict, float]:
         """The verdict and what the judge call cost in USD (0.0 if the model is unpriced)."""
         messages = [SystemMessage(PROMPT),
-                    HumanMessage(f"ANSWER KEY\n\n{render_key(key)}\n\n---\n\nREPORT\n\n{render_report(report)}")]
+                    HumanMessage(f"ANSWER KEY\n\n{render_key(key)}\n\n---\n\nREPORT\n\n{render_report(report)}"
+                                 f"\n\n---\n\nINCIDENT REPORT (given to the investigator)\n\n{incident or '(not provided)'}"
+                                 f"\n\n---\n\nTOOL RESULTS\n\n{render_calls(calls)}")]
         out = self._runnable.invoke(messages)
         if out.get("parsed") is None:
             raise ValueError(f"judge output could not be parsed: {out.get('parsing_error')}")

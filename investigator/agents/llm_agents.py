@@ -48,6 +48,11 @@ TOOLSETS: dict[str, list[str]] = {
     "change_history": ["get_changes", "get_infra_events", "search_past_incidents", "search_runbooks", "get_external_report"],
 }
 SUBMIT_TOOL = "submit_findings"
+
+
+def render_toolsets() -> str:
+    """Which specialist can run which tools, so the planner and critic route work to one that can answer it."""
+    return "\n".join(f"- {agent}: {', '.join(tools)}" for agent, tools in TOOLSETS.items())
 MAX_TOOL_RESULT_CHARS = 8_000
 MAX_SUBMIT_REMINDERS = 2
 
@@ -193,9 +198,16 @@ class LLMPlanner:
         topology = toolbox.call("get_topology", {})
         services = topology.data["services"] if topology.ok and topology.data else []
         topo = "\n".join(f"- {s['name']} ({s['kind']}) -> {', '.join(s['depends_on']) or '-'}" for s in services)
+        # Recent changes across all services, so a change the reporter never mentioned can still become a hypothesis.
+        changes = toolbox.call("get_changes", _sweep_args(incident.get("reported_at")))
+        listed = "\n".join(f"- {c['ts']} {c['service']} [{c['kind']}] {c['summary']}"
+                           for c in (changes.data or {}).get("changes", [])) if changes.ok else ""
         messages = [
             SystemMessage(prompts.PLANNER),
-            HumanMessage(f"Incident report:\n{render_incident(incident)}\n\nService topology:\n{topo or '(unavailable)'}"),
+            HumanMessage(f"Incident report:\n{render_incident(incident)}\n\nService topology:\n{topo or '(unavailable)'}"
+                         f"\n\nChanges in all services over the {CHANGE_SWEEP_DAYS} days before the report:\n"
+                         f"{listed or '(none returned)' if changes.ok else '(change history unavailable)'}"
+                         f"\n\nSpecialists and the tools each can use:\n{render_toolsets()}"),
         ]
         plan, _ = self.caller.structured(TriagePlan, messages)
         return plan
@@ -231,7 +243,9 @@ class LLMGatherer:
         if self.agent == "change_history" and not _has_change_sweep(ctx.tool_calls) and toolbox.remaining > 0:
             # Fixed first step, not left to the model: a service-filtered change query can miss the change
             # that matters (it is often in a neighbouring service), so one unfiltered sweep always runs.
-            sweep = toolbox.call("get_changes", _sweep_args(ctx))
+            # (The planner saw a sweep too, but evidence can only cite this worker's own calls.)
+            anchor = ctx.triage.window_start if ctx.triage and ctx.triage.window_start else ctx.incident.get("reported_at")
+            sweep = toolbox.call("get_changes", _sweep_args(anchor))
             messages.append(HumanMessage(
                 f"Before you start, an unfiltered change-history sweep (all services, from {CHANGE_SWEEP_DAYS} days "
                 f"before the incident) was run for this task; cite it as {sweep.call_id}:\n{render_tool_result(sweep)}"))
@@ -281,8 +295,8 @@ def _has_change_sweep(calls: list[ToolCallRecord]) -> bool:
     return any(c.tool == "get_changes" and c.ok and not c.args.get("service") and not c.args.get("kind") for c in calls)
 
 
-def _sweep_args(ctx: WorkerContext) -> dict[str, str]:
-    anchor = ctx.triage.window_start if ctx.triage and ctx.triage.window_start else ctx.incident.get("reported_at")
+def _sweep_args(anchor: datetime | str | None) -> dict[str, str]:
+    """get_changes args covering CHANGE_SWEEP_DAYS before `anchor`; unbounded history if it is unknown."""
     if isinstance(anchor, str):
         try:
             anchor = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
@@ -323,10 +337,15 @@ class LLMCritic:
 
     def __call__(self, task: Task, ctx: WorkerContext) -> Outcome:
         final = "accept, inconclusive or needs_human" if ctx.human_available else "accept or inconclusive"
-        brief = _analysis_brief(ctx) + (
+        brief = _analysis_brief(ctx) + f"\n\nSpecialists and the tools each can use:\n{render_toolsets()}" + (
             f"\n\nFurther evidence rounds available after this one: {ctx.critic_rounds_left}. "
             f"If none remain, choose {final}."
         )
+        brief += f"\n{ctx.budget_note}" if ctx.budget_note else ""
+        if ctx.final_call:
+            brief += (f"\nThe investigation budget is spent ({ctx.final_call}); no more evidence can be gathered. "
+                      "Decide now from what you have: accept if the evidence supports the top hypothesis (at the "
+                      "confidence it allows), otherwise inconclusive with the blocking gaps.")
         if not ctx.human_available:
             # In eval mode needs_human can only end the run as inconclusive, whatever the evidence says.
             brief += ("\nNo human is available in this run, so never choose needs_human. Decide from the "

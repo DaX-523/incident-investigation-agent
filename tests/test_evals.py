@@ -205,6 +205,46 @@ def test_judge_does_not_override_outcome_based_verdicts():
     assert score_run(run(rep), key("inc-001"), "baseline", verdict("correct")).verdict == "wrong"
 
 
+def test_unsupported_claims_are_reported_and_the_judge_sees_tool_results(tmp_path):
+    seen = []
+
+    def structured(schema, messages):
+        seen.append(messages[-1].content)
+        return JudgeVerdict(root_cause="wrong", root_cause_reason="r", red_herrings_adopted=[], must_not_violated=[],
+                            factors_stated=[], unsupported_claims=["sysctl timeout lowered to 30s"])
+
+    judge = Judge("fake:judge", model=FakeModel(structured=structured))
+    calls = [{"call_id": "call-0001", "tool": "get_changes", "args": {}, "ok": True,
+              "data": {"changes": [{"summary": "checkout-svc v2.14.0"}]}},
+             {"call_id": "call-0002", "tool": "query_metrics", "args": {"service": "x"}, "ok": False, "error": "not_found"}]
+    v, _ = judge(compare.InvestigationReport.model_validate(report(root_cause="r")), key("inc-001"), calls,
+                 "Checkout failing\nCustomers see an error")
+    assert '[call-0001] get_changes {} -> {"changes"' in seen[0] and "[call-0002] query_metrics" in seen[0]
+    assert "Customers see an error" in seen[0]  # the incident report is a source too
+    assert "failed (not_found)" in seen[0]
+    s = score_run(run(report(root_cause="r"), calls=calls), key("inc-001"), "baseline", v)
+    assert s.unsupported_claims == ["sysctl timeout lowered to 30s"]
+
+
+def test_judge_cache_is_invalidated_when_the_rubric_version_changes(tmp_path):
+    calls = []
+
+    def structured(schema, messages):
+        calls.append(1)
+        return verdict("correct")
+
+    judge = Judge("fake:judge", model=FakeModel(structured=structured))
+    out = tmp_path / "res"
+    (out / "runs").mkdir(parents=True)
+    (out / "runs" / "inc-001-baseline.json").write_text(
+        json.dumps({"scenario": "inc-001", "system": "baseline", **run(report(root_cause="x"))}))
+    compare.score_dir(out, judge)
+    cached = out / "judgements" / "inc-001-baseline.json"
+    cached.write_text(cached.read_text().replace('"version": ', '"version": -1, "old": '))
+    compare.score_dir(out, judge)
+    assert len(calls) == 2
+
+
 def test_judge_prompt_carries_key_and_report_and_results_are_cached(tmp_path):
     seen = []
 

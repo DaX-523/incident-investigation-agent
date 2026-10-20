@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 
 from dataset.schema import AnswerKey
 from dataset.validate import ANSWER_KEYS_DIR, load_answer_key
-from evals.judge import Judge, JudgeVerdict, judge_label
+from evals.judge import JUDGE_VERSION, Judge, JudgeVerdict, judge_label
 from evals.scoring import Score, score_run
 from investigator.report import InvestigationReport
 from investigator.scenario import load_scenario, scenario_ids
@@ -71,7 +71,8 @@ def _judgements(out: Path, runs: dict[Path, dict], keys: dict[str, AnswerKey], j
     todo = []
     for path, run in runs.items():
         cached = cache_dir / path.name
-        if cached.exists() and (data := json.loads(cached.read_text())).get("model") == judge.ref:
+        if cached.exists() and (data := json.loads(cached.read_text())).get("model") == judge.ref \
+                and data.get("version") == JUDGE_VERSION:
             found[path] = JudgeVerdict.model_validate(data["verdict"])
         elif run.get("report"):
             todo.append(path)
@@ -79,11 +80,13 @@ def _judgements(out: Path, runs: dict[Path, dict], keys: dict[str, AnswerKey], j
     def grade(path: Path) -> JudgeVerdict | str:
         run = runs[path]
         try:
-            verdict, cost = judge(InvestigationReport.model_validate(run["report"]), keys[run["scenario"]])
+            incident = load_scenario(run["scenario"]).incident_report
+            verdict, cost = judge(InvestigationReport.model_validate(run["report"]), keys[run["scenario"]],
+                                  run.get("calls"), f"{incident.title}\n{incident.description}")
         except Exception as exc:  # a judge failure falls back to lexical scoring for that run
             return f"{type(exc).__name__}: {exc}"
         (cache_dir / path.name).write_text(json.dumps(
-            {"model": judge.ref, "cost_usd": cost, "verdict": verdict.model_dump()}, indent=2))
+            {"model": judge.ref, "version": JUDGE_VERSION, "cost_usd": cost, "verdict": verdict.model_dump()}, indent=2))
         return verdict
 
     if todo:
@@ -143,6 +146,7 @@ def aggregate(scores: list[Score]) -> dict[str, dict[str, Any]]:
             "factors_mentioned": _mean([x.factors_mentioned for x in s]),
             "fell_for_red_herring": sum(bool(x.red_herrings_matched) for x in s),
             "must_not_violations": sum(bool(x.must_not_violated) for x in s) if judged else None,
+            "runs_with_unsupported_claims": sum(bool(x.unsupported_claims) for x in s) if judged else None,
             "security_flagged": f"{sum(bool(x.security_flagged) for x in s)}/{sum(x.security_expected for x in s)}",
             "tool_calls_mean": _mean([x.tool_calls for x in s]),
             "llm_calls_mean": _mean([x.llm_calls for x in s]),
@@ -211,7 +215,7 @@ def render_markdown(meta: dict[str, Any], agg: dict, tags: dict, scores: list[Sc
             f"{_fmt(x.claims_grounded)} | {x.tool_calls} | {x.latency_s:.1f} | {x.input_tokens + x.output_tokens} | {x.cost_usd:.4f} |")
 
     flagged = [x for x in scores if x.verdict != "correct" or x.red_herrings_matched or x.must_not_violated
-               or x.judge_error or (x.judge_root_cause and x.lexical_verdict != x.verdict)]
+               or x.unsupported_claims or x.judge_error or (x.judge_root_cause and x.lexical_verdict != x.verdict)]
     if flagged:
         lines += ["", "## Not correct, or worth a look", ""]
         for x in flagged:
@@ -223,6 +227,8 @@ def render_markdown(meta: dict[str, Any], agg: dict, tags: dict, scores: list[Sc
                 lines.append(f"  - adopted red herring: {x.red_herrings_matched}")
             if x.must_not_violated:
                 lines.append(f"  - violated must-not: {x.must_not_violated}")
+            if x.unsupported_claims:
+                lines.append(f"  - claims no tool result supports: {x.unsupported_claims}")
             if x.judge_error:
                 lines.append(f"  - judge failed, lexical verdict used: {x.judge_error}")
     lines += ["", "## Metric definitions", "",
@@ -232,6 +238,8 @@ def render_markdown(meta: dict[str, Any], agg: dict, tags: dict, scores: list[Sc
               "decided manually in `reviews.yaml`. **root_cause_accuracy_lexical**: the same by alias word overlap only.",
               "- **fell_for_red_herring / must_not_violations**: runs that adopt a red herring as cause or primary fix / "
               "do something the key forbids (judge).",
+              "- **runs_with_unsupported_claims**: runs whose report states as observed a specific fact (value, setting, "
+              "event) that no tool result in the run shows (judge, checked against the saved tool data).",
               "- **claims_grounded**: share of supported/refuted hypotheses and corrective actions citing at least one "
               "evidence id that traces to an executed tool call. **citations_valid**: share of all cited ids that do.",
               "- **key_evidence_retrieved / cited**: share of the answer key's required evidence the system fetched (a "

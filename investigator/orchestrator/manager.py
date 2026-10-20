@@ -416,14 +416,56 @@ def _next_round(state: InvestigationState, tasks: list[Task]) -> Decision:
     return _dispatch(state, tasks, "gather", {"budget": budget})
 
 
+def _start_final_pass(state: InvestigationState, limit: StopReason) -> dict[str, Any]:
+    budget = state["budget"].model_copy(update={"limit_hit": limit})
+    gap = Gap(kind="budget", description=f"Evidence gathering stopped at {limit}; "
+                                         "the conclusion rests on the evidence gathered up to then.")
+    return {"budget": budget, "gaps": state["gaps"] + [gap]}
+
+
+def _final_verdict(state: InvestigationState, update: dict[str, Any]) -> Decision:
+    """Closing decision after a limit: the critic's call on what was gathered; nothing more is gathered."""
+    limit = state["budget"].limit_hit
+    verdict = _latest_critic_verdict(state)
+    if verdict is not None and verdict.verdict == "needs_human" and state["config"].mode == "interactive":
+        return Decision(action="human", update={**update, "phase": "human"})
+    accepted = verdict is None or verdict.verdict == "accept"
+    if accepted and evidence_gate(state).passed:
+        return _report(state, "accepted", update)
+    if verdict is not None and verdict.verdict == "inconclusive" and evidence_gate(state).passed:
+        return _report(state, "inconclusive", update)
+    return _report(state, limit or "no_progress", update)
+
+
 def decide(state: InvestigationState, now: float | None = None) -> Decision:
-    """Pick the next step after outcomes for the current phase have been applied."""
+    """Pick the next step after outcomes for the current phase have been applied.
+
+    When a limit is hit the run is not cut off blind: it gets one bounded closing pass. Evidence
+    gathered so far is ranked, the critic decides (accept or inconclusive), and nothing more is
+    gathered. The pass costs at most one reasoning and one critic call past the limit.
+    """
     phase = state["phase"]
     limit = check_limits(state, now)
+    final = state["budget"].limit_hit
+
+    if limit and not final and phase in ("gather", "reason", "critique"):
+        update = _start_final_pass(state, limit)
+        state = _merged(state, update)
+        if phase == "gather":
+            if not state["evidence"]:
+                return _report(state, limit, update)
+            goal = f"Final ranking ({limit} reached): rank hypotheses on the evidence gathered so far."
+            return _dispatch(state, [_single(state, "reasoning", goal)], "reason", update)
+        if phase == "reason":
+            if not any(h.rank is not None for h in state["hypotheses"].values()):
+                return _report(state, limit, update)
+            goal = f"Final decision ({limit} reached): accept or inconclusive on the evidence gathered so far."
+            return _dispatch(state, [_single(state, "critic", goal)], "critique", update)
+        return _final_verdict(state, update)
 
     if phase == "gather":
-        if limit:
-            return _report(state, limit)
+        if final:
+            return _report(state, final)
         ready = ready_tasks(state)
         if ready:
             return _dispatch(state, ready, "gather")
@@ -431,14 +473,15 @@ def decide(state: InvestigationState, now: float | None = None) -> Decision:
 
     if phase == "reason":
         if not any(h.rank is not None for h in state["hypotheses"].values()):
-            return _report(state, limit or "no_progress")
-        if limit:
-            return _report(state, limit)
+            return _report(state, final or "no_progress")
+        if final:
+            goal = f"Final decision ({final} reached): accept or inconclusive on the evidence gathered so far."
+            return _dispatch(state, [_single(state, "critic", goal)], "critique")
         return _dispatch(state, [_single(state, "critic", "Challenge the ranked hypotheses against the evidence.")], "critique")
 
     if phase == "critique":
-        if limit:
-            return _report(state, limit)
+        if final:
+            return _final_verdict(state, {})
         verdict = _latest_critic_verdict(state)
         loops_left = state["budget"].critic_loops < state["config"].limits.max_critic_loops
 

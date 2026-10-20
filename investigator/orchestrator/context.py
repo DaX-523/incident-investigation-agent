@@ -14,6 +14,7 @@ from investigator.schemas import (
     Gap,
     Hypothesis,
     InvestigationState,
+    StopReason,
     Task,
     ToolCallRecord,
     TriagePlan,
@@ -35,11 +36,21 @@ class WorkerContext(BaseModel):
     max_worker_attempts: int = 2
     critic_rounds_left: int = 0
     human_available: bool = False
+    budget_note: str = ""
+    final_call: StopReason | None = None  # set when a limit was hit: decide now, no more gathering
 
 
 class WorkerInput(TypedDict):
     task: Task
     context: WorkerContext
+
+
+def _budget_note(state: InvestigationState) -> str:
+    limits, budget = state["config"].limits, state["budget"]
+    rounds = max(1, budget.rounds)
+    return (f"Budget used: {budget.usage.tokens:,}/{limits.max_tokens:,} tokens, {budget.usage.tool_calls}/"
+            f"{limits.max_tool_calls} tool calls over {budget.rounds} evidence round(s); one round has cost about "
+            f"{budget.usage.tokens // rounds:,} tokens and {budget.usage.tool_calls // rounds} tool calls.")
 
 
 def build_context(state: InvestigationState, task: Task) -> WorkerContext:
@@ -57,6 +68,8 @@ def build_context(state: InvestigationState, task: Task) -> WorkerContext:
         human_inputs=list(state.get("human_inputs", [])),
         tool_call_allowance=min(remaining, limits.max_tool_calls_per_task) if is_gatherer else 0,
         max_worker_attempts=limits.max_worker_attempts,
-        critic_rounds_left=max(0, limits.max_critic_loops - state["budget"].critic_loops - 1),
+        critic_rounds_left=0 if state["budget"].limit_hit else max(0, limits.max_critic_loops - state["budget"].critic_loops - 1),
         human_available=state["config"].mode == "interactive",
+        budget_note=_budget_note(state),
+        final_call=state["budget"].limit_hit,
     )

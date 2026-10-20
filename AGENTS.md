@@ -107,7 +107,8 @@ investigator/
 evals/
   scoring.py         scoring of a saved run against its answer key: deterministic checks (key evidence against the
                      data each call returned), lexical root-cause match, optional LLM judgement
-  judge.py           LLM grader (JUDGE_MODEL): root cause as cause vs amplifier, red herrings, must-not, factors
+  judge.py           LLM grader (JUDGE_MODEL): root cause as cause vs amplifier, red herrings, must-not, factors,
+                     claims no saved tool result supports; JUDGE_VERSION invalidates cached verdicts
   compare.py         multi-agent vs baseline sweep: saves runs, resumes, rescores, writes results.md/json
   results/<dir>/     runs/*.json, judgements/*.json (cached judge verdicts), results.json, results.md,
                      optional reviews.yaml (manual review decisions)

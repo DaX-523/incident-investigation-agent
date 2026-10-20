@@ -4,6 +4,7 @@ from langchain_core.messages import ToolMessage
 from investigator.agents.llm_agents import (
     LLMCritic,
     LLMGatherer,
+    LLMPlanner,
     LLMRefusal,
     ReasoningOutput,
     StructuredOutputError,
@@ -226,6 +227,7 @@ def test_critic_is_told_when_no_human_can_answer(human_available):
     task = Task(task_id="T9", agent="critic", goal="challenge")
     worker(task, WorkerContext(incident={"title": "x"}, human_available=human_available))
     assert ("never choose needs_human" in seen[0]) is not human_available
+    assert "- observability: query_metrics, search_logs" in seen[0]
 
 
 def change_gatherer(script, tool_calls=(), allowance=4):
@@ -259,6 +261,28 @@ def test_change_sweep_is_skipped_when_the_team_already_ran_one():
     g, task, ctx, toolbox, _ = change_gatherer(lambda m: ai(tool_calls=[submit(["call-0001"])]), tool_calls=[filtered])
     g(task, ctx, toolbox)
     assert toolbox.records()[0].tool == "get_changes"  # a service-filtered query is not a sweep
+
+
+def test_planner_sees_recent_changes_in_all_services():
+    seen = []
+
+    def planner(schema, messages):
+        seen.append(messages[-1].content)
+        return TriagePlan(summary="s", hypotheses=[HypothesisSpec(key="h", statement="x")], tasks=[])
+
+    spec = load_model_config(env={})["triage"]
+    toolbox = ToolBox(ToolHarness(load_scenario("inc-001"), settings=NO_SLEEP), 3)
+    LLMPlanner(_Caller("triage", spec, FakeModel(structured=planner), UsageLedger()))(
+        {"title": "x", "reported_at": "2026-09-14T14:30:00Z"}, toolbox)
+    assert [r.tool for r in toolbox.records()] == ["get_topology", "get_changes"]
+    assert toolbox.records()[1].args == {"start": "2026-08-31T14:30:00Z"}  # unfiltered: every service
+    assert "catalog-svc" in seen[0] and "v2.14.0" in seen[0]  # changes from two different services
+    assert "- dependency: get_topology" in seen[0]  # routing: which specialist has which tools
+
+
+def test_reasoning_reporting_and_baseline_separate_observed_from_inferred():
+    from investigator.agents import prompts
+    assert all(prompts.OBSERVED_VS_INFERRED in p for p in (prompts.REASONER, prompts.REPORTER, prompts.BASELINE))
 
 
 def test_large_tool_results_are_truncated_with_a_visible_marker():

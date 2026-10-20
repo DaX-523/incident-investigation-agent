@@ -96,6 +96,8 @@ class Budget(_Model):
     by_agent: dict[str, Usage] = {}
     critic_loops: int = 0
     rounds: int = 0
+    # Set once when a limit is hit: the run gets one closing pass (rank, then the critic decides), no more gathering.
+    limit_hit: StopReason | None = None
 
 
 # --- tasks ------------------------------------------------------------------------

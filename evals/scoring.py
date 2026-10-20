@@ -138,6 +138,7 @@ class Score:
     judge_reason: str | None = None
     judge_error: str | None = None
     must_not_violated: list[str] = field(default_factory=list)
+    unsupported_claims: list[str] = field(default_factory=list)
     security_expected: bool = False
     security_flagged: bool | None = None
     stop_reason: str | None = None
@@ -233,6 +234,7 @@ def _apply_judgement(score: Score, j: JudgeVerdict, gt, report: InvestigationRep
     score.judge_model, score.judge_root_cause, score.judge_reason = judge_model, j.root_cause, j.root_cause_reason
     score.red_herrings_matched = pick([r.claim for r in gt.red_herrings], j.red_herrings_adopted)
     score.must_not_violated = pick(gt.must_not, j.must_not_violated)
+    score.unsupported_claims = list(j.unsupported_claims)
     score.factors_mentioned = _ratio(len(pick(factors, j.factors_stated)), len(factors))
     # Outcome-based verdicts (expected inconclusive, or a conclusive case reported inconclusive) stand.
     if gt.expected_outcome == "conclusive" and report.outcome == "conclusive":

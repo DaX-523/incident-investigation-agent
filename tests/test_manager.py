@@ -390,15 +390,49 @@ def test_limits():
     assert check_limits(merged(state, {"budget": budget}), T0) == "max_tokens"
 
 
-def test_limit_hit_during_gather_stops_dispatch():
-    state = triaged(max_tool_calls=1)
-    state, tasks = dispatch(state)
-    state = deliver(state, gatherer_outcome(tasks[0], call_ids=("a", "b")))
+def _limit_then_final_pass(verdict):
+    """Hit the tool-call limit mid-gather, then run the closing pass with the given critic verdict."""
+    state = run_gather_round(run_gather_round(triaged(max_tool_calls=3, gate_top_k=1)))  # every agent ran
+    assert check_limits(state, T0) == "max_tool_calls"
+    d = decide(state, T0)
+    assert d.action == "dispatch" and [t.agent for t in d.tasks] == ["reasoning"]  # no more gathering
+    state = merged(state, d.update)
+    assert state["budget"].limit_hit == "max_tool_calls" and any(g.kind == "budget" for g in state["gaps"])
+    assessments = [HypothesisAssessment(hypothesis_id="H1", statement="x", rank=1, status="supported",
+                                        confidence="high", supporting=[state["evidence"][0].id], rationale="r")]
+    state = deliver(state, Outcome(task_id=d.tasks[0].task_id, agent="reasoning", status="ok", assessments=assessments))
     d = step(state, T0)
+    assert d.action == "dispatch" and [t.agent for t in d.tasks] == ["critic"]
+    state = merged(state, d.update)
+    state = deliver(state, Outcome(task_id=d.tasks[0].task_id, agent="critic", status="ok", verdict=verdict))
+    return step(state, T0)
+
+
+def test_limit_triggers_one_closing_pass_and_the_critic_decides():
+    assert _limit_then_final_pass(CriticVerdict(verdict="accept")).stop_reason == "accepted"
+    assert _limit_then_final_pass(CriticVerdict(verdict="inconclusive", blocking_gaps=["x"])).stop_reason == "inconclusive"
+    # Asking for more evidence is not possible any more: the run ends at the limit (inconclusive report).
+    d = _limit_then_final_pass(CriticVerdict(verdict="need_more_evidence",
+                                             requests=[EvidenceRequest(agent="observability", goal="more")]))
     assert d.action == "report" and d.stop_reason == "max_tool_calls"
 
 
-def test_wall_clock_limit_routes_to_report():
+def test_closing_pass_cannot_accept_when_an_agent_never_ran():
+    state = triaged(max_tool_calls=1, gate_top_k=1)
+    state, tasks = dispatch(state)  # T3 (dependency) waits on T1 and never runs
+    state = deliver(state, *[gatherer_outcome(t, call_ids=(f"{t.task_id}-a", f"{t.task_id}-b")) for t in tasks])
+    d = step(state, T0)
+    state = merged(state, d.update)
+    a = [HypothesisAssessment(hypothesis_id="H1", statement="x", rank=1, status="supported", confidence="high",
+                              supporting=[state["evidence"][0].id], rationale="r")]
+    state = deliver(state, Outcome(task_id=d.tasks[0].task_id, agent="reasoning", status="ok", assessments=a))
+    d = step(state, T0)
+    state = deliver(merged(state, d.update), Outcome(task_id=d.tasks[0].task_id, agent="critic", status="ok",
+                                                     verdict=CriticVerdict(verdict="accept")))
+    assert step(state, T0).stop_reason == "max_tool_calls"  # evidence gate still applies
+
+
+def test_limit_before_any_evidence_reports_immediately():
     state = triaged(max_wall_clock_s=5)
     d = decide(state, T0 + 10)
     assert d.action == "report" and d.stop_reason == "max_wall_clock"
