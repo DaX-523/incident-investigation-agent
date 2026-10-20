@@ -1,0 +1,3410 @@
+{
+  "scenario": "inc-016",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Partners getting 5xx from the tracking API since ~09:00",
+    "outcome": "conclusive",
+    "summary": "Since about 09:00 UTC on 2026-09-15, tracking-api has returned 5xx for roughly 12-13% of requests (error_rate 0.2-0.4% before 08:50, 1.1% at 08:55). Request rate stayed flat at about 417-425 rps, so this is not a load increase. Confirmed from metrics, infra events and traces: the data-jobs Kubernetes job backfill-carrier-events was created at 08:49:50Z with parallelism 16. From 08:50, tracking-db write IOPS rose from about 1,500 to about 8,900 (about 9,900 from 09:00), lock waits rose from 0 to 31-48 per second, and query p99 rose from 8-10 ms to about 950-990 ms. tracking-api pool in-use had already risen from 17-18 to 31 at 08:50, before the pool cut. The max_size cut from 50 to 40 at 08:55:20Z (change by platform-finops) then pinned in-use at 40, and pool wait p99 rose to about 1,950 ms. The failing trace and the slow trace both show time spent waiting on pool acquisition and on row locks in shipment_events, and a backfill batch INSERT ... ON CONFLICT on shipment_events was running at 09:15:30Z. Assumptions not verified by any tool result: that the backfill is the lock holder (no pg_stat_activity data), that 40 connections are too few at baseline latency, and that reverting the pool to 50 would restore service (untested). The 22-connection peak in the change record is a historical figure, not an incident measurement. Telemetry for data-jobs and webhook-ingest is absent, and tracking-api logs for the pre-incident period are empty, so those absences are not confirmed negatives. Answer to the question: reverting the pool change alone is not established as sufficient, because the pool was already climbing before the cut and the underlying cause is DB lock contention. Pausing or throttling the backfill is the more direct mitigation, and a pool revert may be a useful temporary buffer if verified.",
+    "root_cause": "The backfill-carrier-events Kubernetes job (data-jobs, created 08:49:50Z, parallelism 16) ran INSERT ... ON CONFLICT DO UPDATE batches of 5,000 rows against shipment_events on tracking-db. This drove write IOPS to about 98% of the provisioned 10,000 and produced row-lock waits (Lock:tuple) on shipment_events. Tracking-api SELECTs on shipment_events were blocked on those locks while holding pooled connections, so connection hold times grew and pool in-use rose from 18 to 31 by 08:50. When db.pool.max_size was cut from 50 to 40 at 08:55:20Z, the pool was exhausted (in-use pinned at 40, wait p99 about 1,950 ms). Requests then timed out acquiring a connection after 2000 ms and returned 5xx. The blocking session is inferred from timing and the trace evidence, not confirmed by lock-holder data.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H5",
+        "statement": "The data-jobs backfill-carrier-events Kubernetes job created at 08:49:50Z with parallelism=16 saturated tracking-db write IOPS and lock resources, causing increased tracking-db query latency and tracking-api connection hold times; when the db.pool.max_size was cut to 40 at 08:55, the tracking-api pool saturated and timed out connections, leading to 500/503 errors.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E9",
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14",
+          "E25",
+          "E26"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "Kubernetes job/backfill-carrier-events created in namespace data-jobs by data-eng at 08:49:50Z with parallelism 16; 16 of 16 pods running at 08:50:06Z.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "RDS event on tracking-db at 08:58Z: Write IOPS at 98% of provisioned (10000) for 5 minutes.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "tracking-db write_iops was 1480-1520 from 08:30 to 08:45, 8900 at 08:50, 9850 at 08:55 and 9880-9920 from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "tracking-db lock_waits_per_s was 0 from 08:30 to 08:45, 31 at 08:50, 44 at 08:55 and 45-48 from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "tracking-db query_latency_p99 was 8-10 ms from 08:30 to 08:45, 140 ms at 08:50, 610 ms at 08:55 and 950-990 ms from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Ordering: the backfill job was created at 08:49:50Z, and tracking-db write IOPS, lock waits, query latency and tracking-api in-use connections all rise at the 08:50 sample, before the 08:55:20Z pool reload. Pool in-use was already 31 at 08:50 with wait p99 at 3 ms.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Successful trace t-c16-before-1 at 08:40:12Z: 19 ms total, pool acquire 0.4 ms, SELECT shipment_events 7 ms. Successful trace t-c16-slow-1 at 09:12:09Z: 1,452 ms total, pool acquire 480 ms, and SELECT shipment_events 941 ms with wait_event=Lock:tuple. The slow request spent its time waiting on a row lock inside the DB while holding a pooled connection.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "data-jobs trace t-c16-batch-1 at 09:15:30Z: backfill.batch job 'backfill-carrier-events' with batch_size 5000 ran 4,210 ms. Its tracking-db span was INSERT shipment_events ON CONFLICT DO UPDATE for 5,000 rows, taking 4,120 ms. This batch is on shipment_events, the same table the tracking-api SELECT is blocked on.",
+            "evidence_ids": [
+              "E26"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The backfill job was the primary source of the observed DB I/O and lock waits at that time",
+          "No other workload generated comparable DB load in that window"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H1",
+        "statement": "The 08:55 reduction of tracking-api db.pool.max_size from 50 to 40 leaves too few connections for normal peak concurrency, so requests wait for a connection, time out, and return 500/503 during peaks.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E4",
+          "E5",
+          "E6",
+          "E7",
+          "E8",
+          "E24",
+          "E1",
+          "E3",
+          "E35"
+        ],
+        "contradicting_evidence": [
+          "E14",
+          "E22",
+          "E28",
+          "E36",
+          "E39",
+          "E2"
+        ],
+        "facts": [
+          {
+            "text": "tracking-api db_pool_max_size was 50 at 08:30-08:50 and 40 from 08:55 onward.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_wait_p99 was 1-3 ms through 08:50, 420 ms at 08:55, and 1950-1995 ms from 09:00 through 10:00.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Log at 08:55:20Z from tracking-api: 'config reloaded: db.pool.max_size 50 -> 40'.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "tracking-api ERROR logs at 09:02:11, 09:10:02 (route GET /shipments/{id}/events) and 09:21:45 (route GET /shipments/{id}): 'timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)'. Only 4 pool-related log entries exist in the window.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Alerts: TrackingApi5xxHigh (critical, 5xx above 5% for 3 minutes) firing at 09:03Z; DbPoolSaturated (warning, pool at 100%) firing at 09:04Z. No earlier alerts in the window.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Error trace t-c16-fail-1 at 09:12:05Z: GET /shipments/{id}/events took 2006 ms and failed with pool_timeout; the db.pool.acquire span took 2000 ms and ended in timeout. Only one error trace was returned for the window, so this is a sample, not a full population.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "tracking-api error_rate was 0.2-0.4% from 08:30 to 08:50, 1.1% at 08:55, then 11.8% at 09:00 and 12.4-13.1% through 10:00 (5-minute points).",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_in_use was 17-18 from 08:30 to 08:45, 31 at 08:50, 40 at 08:55 and held at 40 through 10:00.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Past incident PIR-2026-024 (2026-05-20, billing-api): 503s after its DB pool was reduced during a cost review. Root cause: 'Pool sized below peak concurrency during month-end invoicing.' Resolution: reverted the pool size and added a month-end load check to pool changes.",
+            "evidence_ids": [
+              "E35"
+            ]
+          },
+          {
+            "text": "Ordering: the backfill job was created at 08:49:50Z, and tracking-db write IOPS, lock waits, query latency and tracking-api in-use connections all rise at the 08:50 sample, before the 08:55:20Z pool reload. Pool in-use was already 31 at 08:50 with wait p99 at 3 ms.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_in_use was 17-18 through 08:45, rose to 31 at 08:50 (before the 08:55 max_size change), reached 40 at 08:55 and stayed pinned at 40 through 10:00. db_pool_max_size was 50 until 08:50 and 40 from 08:55.",
+            "evidence_ids": [
+              "E22"
+            ]
+          },
+          {
+            "text": "Change record: tracking-api config change 'Reduce db.pool.max_size from 50 to 40' at 2026-09-15T08:55:00Z by platform-finops. The change record's details state: 'Peak observed pool usage over the last 14 days was 22 connections.' This 22 is a historical 14-day figure supplied in the change record, not a measurement from the incident window.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "Runbook rb-db-pool 'Tuning service DB pools': pool size should cover peak concurrent queries with 50% headroom; 'Pool exhaustion is usually a symptom of slow queries; check DB latency before resizing.' Applied to the 22-connection historical peak in call-0003, 50% headroom gives about 33, which is below 40.",
+            "evidence_ids": [
+              "E36"
+            ]
+          },
+          {
+            "text": "Within the available pre-cutover window (08:30-08:45Z on 15 Sep, before the 08:55 pool change) tracking-api error_rate was 0.2-0.3%, db_pool_wait_p99 was 1-2 ms, and db_pool_in_use was 17-18. Error rates were already low and pool wait was negligible before the pool change, so the pool change itself is not shown to coincide with a rise in errors.",
+            "evidence_ids": [
+              "E39"
+            ]
+          },
+          {
+            "text": "tracking-api request_rate stayed flat at 417-425 rps from 08:30 through 10:00; no load step at 08:55-09:00.",
+            "evidence_ids": [
+              "E2"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Reverting the pool change would restore enough capacity under the same DB latency profile"
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "Long-running or lock-holding data-jobs batch queries on tracking-db hold connections or locks that tracking-api needs, so its pooled connections are slow to return and the pool is exhausted at the start of the business day.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E9",
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14",
+          "E20",
+          "E21",
+          "E25",
+          "E26",
+          "E3",
+          "E19",
+          "E22",
+          "E23",
+          "E31"
+        ],
+        "contradicting_evidence": [
+          "E33"
+        ],
+        "facts": [
+          {
+            "text": "Kubernetes job/backfill-carrier-events created in namespace data-jobs by data-eng at 08:49:50Z with parallelism 16; 16 of 16 pods running at 08:50:06Z.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "RDS event on tracking-db at 08:58Z: Write IOPS at 98% of provisioned (10000) for 5 minutes.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "tracking-db write_iops was 1480-1520 from 08:30 to 08:45, 8900 at 08:50, 9850 at 08:55 and 9880-9920 from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "tracking-db lock_waits_per_s was 0 from 08:30 to 08:45, 31 at 08:50, 44 at 08:55 and 45-48 from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "tracking-db query_latency_p99 was 8-10 ms from 08:30 to 08:45, 140 ms at 08:50, 610 ms at 08:55 and 950-990 ms from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Ordering: the backfill job was created at 08:49:50Z, and tracking-db write IOPS, lock waits, query latency and tracking-api in-use connections all rise at the 08:50 sample, before the 08:55:20Z pool reload. Pool in-use was already 31 at 08:50 with wait p99 at 3 ms.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "tracking-db lock_waits_per_s was 0 through 08:45, then 31 at 08:50, 44 at 08:55 and ~45-48 from 09:00 to 10:00.",
+            "evidence_ids": [
+              "E20"
+            ]
+          },
+          {
+            "text": "tracking-db query_latency_p99 was 8-10 ms until 08:45, rose to 140 ms at 08:50, 610 ms at 08:55, and ~950-990 ms from 09:00 through 10:00.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "Successful trace t-c16-before-1 at 08:40:12Z: 19 ms total, pool acquire 0.4 ms, SELECT shipment_events 7 ms. Successful trace t-c16-slow-1 at 09:12:09Z: 1,452 ms total, pool acquire 480 ms, and SELECT shipment_events 941 ms with wait_event=Lock:tuple. The slow request spent its time waiting on a row lock inside the DB while holding a pooled connection.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "data-jobs trace t-c16-batch-1 at 09:15:30Z: backfill.batch job 'backfill-carrier-events' with batch_size 5000 ran 4,210 ms. Its tracking-db span was INSERT shipment_events ON CONFLICT DO UPDATE for 5,000 rows, taking 4,120 ms. This batch is on shipment_events, the same table the tracking-api SELECT is blocked on.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_in_use was 17-18 from 08:30 to 08:45, 31 at 08:50, 40 at 08:55 and held at 40 through 10:00.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "tracking-db write_iops stepped from ~1,500 (08:30-08:45) to ~8,900 at 08:50 and ~9,900 from 09:00 onward, staying flat through 10:00.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_in_use was 17-18 through 08:45, rose to 31 at 08:50 (before the 08:55 max_size change), reached 40 at 08:55 and stayed pinned at 40 through 10:00. db_pool_max_size was 50 until 08:50 and 40 from 08:55.",
+            "evidence_ids": [
+              "E22"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_wait_p99 was 1-3 ms until 08:50, 420 ms at 08:55, and ~1,950-1,995 ms from 09:00 onward. error_rate was 0.2-0.4% until 08:50, 1.1% at 08:55, and 11.8-13.1% from 09:00 through 10:00. request_rate stayed flat at ~417-425 rps across the whole window.",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "Infra events for tracking-db in 2026-09-14T13:30Z to 2026-09-15T10:00Z: one event, RDS 'WriteIOPSHigh' at 2026-09-15T08:58:00Z, 'Write IOPS at 98% of provisioned (10000) for 5 minutes.' No other tracking-db events appear in the window.",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "Change history for data-jobs in 2026-09-14T13:30Z to 2026-09-15T10:00Z: no changes returned (empty result). Separately, change history with kind=scheduled_job across all services in the same window returned no changes (call-0019).",
+            "evidence_ids": [
+              "E33"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The backfill job is the primary driver of the observed DB latency and lock waits",
+          "No other batch jobs ran concurrently at similar scale"
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "A webhook-ingest burst on tracking-db consumes shared database connections, leaving tracking-api's pool unable to acquire connections and causing intermittent exhaustion errors.",
+        "status": "open",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E31"
+        ],
+        "contradicting_evidence": [
+          "E17",
+          "E27",
+          "E34"
+        ],
+        "facts": [
+          {
+            "text": "Infra events for tracking-db in 2026-09-14T13:30Z to 2026-09-15T10:00Z: one event, RDS 'WriteIOPSHigh' at 2026-09-15T08:58:00Z, 'Write IOPS at 98% of provisioned (10000) for 5 minutes.' No other tracking-db events appear in the window.",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "webhook-ingest metrics query for 07:00-10:00 on 15 Sep returned no series and no available series.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "No metrics exist for data-jobs or webhook-ingest in the window; both queries returned empty with no series. This is a gap, not evidence that these services were idle. Their absence means the data-jobs schedule and any webhook-ingest burst could not be confirmed from metrics.",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "Change history for webhook-ingest in 2026-09-14T13:30Z to 2026-09-15T10:00Z: no changes returned (empty result). This record covers changes only, not webhook traffic volume.",
+            "evidence_ids": [
+              "E34"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Webhook-ingest normally writes to tracking-db and would be visible in its metrics/logs"
+        ]
+      },
+      {
+        "rank": 5,
+        "hypothesis_id": "H2",
+        "statement": "The tracking-api 3.9.0 pagination fix (deployed 2026-09-14T14:10Z) issues more queries or holds connections longer on long event histories, raising per-request connection hold time so the pool saturates under normal traffic, and the 08:55 pool cut tips it over.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E15",
+          "E25",
+          "E29",
+          "E30",
+          "E38",
+          "E40"
+        ],
+        "facts": [
+          {
+            "text": "No tracking-api startup, version, deploy, or 3.9.0 pagination log lines in the window (14 Sep 13:30 to 15 Sep 10:00); the only config-related line is the 08:55:20Z pool reload. Infra events in the window list no tracking-api deploy or restart.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "Successful trace t-c16-before-1 at 08:40:12Z: 19 ms total, pool acquire 0.4 ms, SELECT shipment_events 7 ms. Successful trace t-c16-slow-1 at 09:12:09Z: 1,452 ms total, pool acquire 480 ms, and SELECT shipment_events 941 ms with wait_event=Lock:tuple. The slow request spent its time waiting on a row lock inside the DB while holding a pooled connection.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Change record: tracking-api 3.9.0 deploy 'pagination fix for long event histories' at 2026-09-14T14:10:00Z (author tracking-team). The record contains no details on queries per request or connection hold time.",
+            "evidence_ids": [
+              "E29"
+            ]
+          },
+          {
+            "text": "The 3.9.0 deploy at 2026-09-14T14:10Z precedes the reported onset (~09:00Z on 2026-09-15) by about 19 hours, and the pool change at 08:55Z is about 5 minutes before onset. Both changes are on the tracking-api service.",
+            "evidence_ids": [
+              "E30"
+            ]
+          },
+          {
+            "text": "Pre-deploy baseline could not be obtained. tracking-api error_rate, db_pool_wait_p99 and db_pool_in_use requested from 2026-09-14T13:30Z to 2026-09-15T08:45Z returned data only from 2026-09-15T08:30Z onward. No points exist for 14 Sep, so the 3.9.0 deploy (14:10Z) and the ~19 hours after it cannot be compared against the pre-deploy period in metrics.",
+            "evidence_ids": [
+              "E38"
+            ]
+          },
+          {
+            "text": "tracking-api log search for timeout/pool_timeout/503/500/error from 2026-09-14T13:30Z to 2026-09-15T08:50Z returned zero entries. A plain tracking-api log search for 14 Sep 14:00-16:00Z also returned zero entries. Logs for tracking-api appear absent for this period, so the absence of errors before 08:50 is not a confirmed negative.",
+            "evidence_ids": [
+              "E40"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Pause or throttle the backfill-carrier-events job in data-jobs (scale parallelism to zero or reduce it substantially) to release shipment_events locks and cut tracking-db write IOPS, then watch whether lock_waits and query p99 return to baseline.",
+        "rationale": "The backfill is the only confirmed driver of the DB write surge and lock waits that began at 08:50, before the pool cut. Stopping it addresses the cause directly and is reversible.",
+        "evidence_ids": [
+          "E9",
+          "E11",
+          "E12",
+          "E13",
+          "E20",
+          "E21",
+          "E26"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Consider reverting db.pool.max_size from 40 to 50 as a temporary buffer, and validate it against pool_wait_p99 and in-use before treating it as a fix. Do not treat it as sufficient alone.",
+        "rationale": "Pool exhaustion at 40 is directly observed and a larger pool would give headroom. However, in-use was already rising before the cut and the DB latency is still about 950 ms, so a revert alone is untested and may only delay saturation. The runbook also advises checking DB latency before resizing.",
+        "evidence_ids": [
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E22",
+          "E23",
+          "E36",
+          "E35"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Rework the backfill so it does not hold row locks on shipment_events for long periods: use smaller batches, lower parallelism, commit between batches, and use a conflict-handling approach that touches fewer rows. Re-run only after load testing against a staging copy of tracking-db.",
+        "rationale": "The trace shows a 5,000-row INSERT ON CONFLICT taking 4.1 s on shipment_events, the table the tracking-api read is blocked on. Reducing lock duration removes the contention source.",
+        "evidence_ids": [
+          "E26",
+          "E25",
+          "E12"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Require a pool-size change review that checks DB latency and peak concurrency from current metrics, plus a month-end or batch-window load check, before any reduction in tracking-api db.pool.max_size. Apply the same rule to other services with shared DB pools.",
+        "rationale": "The same failure pattern occurred in PIR-2026-024. The 22-connection historical peak in the change record was not checked against current data, and the runbook says to check DB latency before resizing.",
+        "evidence_ids": [
+          "E35",
+          "E36",
+          "E28"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "prevent",
+        "action": "Require scheduled bulk jobs that write to tables shared with the request path to be change-reviewed and scheduled outside business hours, or to run against a separate replica or table.",
+        "rationale": "The backfill was created at 08:49:50Z, just before the start of business-day traffic, and there is no change record for it in data-jobs history.",
+        "evidence_ids": [
+          "E9",
+          "E33",
+          "E37"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Add alerting on tracking-db lock_waits_per_s, query_latency_p99 and write IOPS, and on tracking-api db_pool_wait_p99 and in-use near max_size, so the first signal fires before the 5xx alert. Also fix per-instance metrics (instance label returned no series) and tracking-api log coverage (empty results for 14 Sep and before 08:50).",
+        "rationale": "The DbPoolSaturated and TrackingApi5xxHigh alerts only fired at 09:03-09:04, several minutes after the DB contention began at 08:50. Missing per-instance and log data made this investigation harder.",
+        "evidence_ids": [
+          "E8",
+          "E11",
+          "E12",
+          "E13",
+          "E16",
+          "E40",
+          "E18"
+        ]
+      }
+    ],
+    "missing_data": [
+      "pg_stat_activity or lock-holder data for 08:45-10:00 on tracking-db to confirm which session holds the locks and whether it is the backfill",
+      "data-jobs pod metrics and run history to confirm the backfill start time, parallelism and connection use",
+      "tracking-db connection counts by application, and long-transaction data",
+      "tracking-api per-instance pool metrics and a 5xx vs 503 split, to test whether 40 connections suffice at baseline latency",
+      "A controlled test of whether the pool saturates at 50 with current DB latency, to decide whether reverting alone restores service",
+      "webhook-ingest metrics, logs and connection use for 07:00-10:00 to confirm or exclude H4",
+      "Pre-14 Sep metrics and 3.9.0 query-count and connection hold-time data, to test H2 against a real baseline",
+      "Logs for tracking-api for the pre-incident period, to confirm that the empty results reflect absence of errors and not missing log coverage",
+      "Full trace population for the window, not just one error trace and one slow trace"
+    ],
+    "gaps": [
+      "H2 (3.9.0 hold time): no pre-08:30 pool-hold or query-count metrics returned, no traces were queried, and no deploy record was found, so connection hold time before and after 14:10Z on 14 Sep cannot be compared.",
+      "H4 (webhook-ingest): webhook-ingest returned no metrics or series for 07:00-10:00, so its connection use on tracking-db is unknown; no logs were searched for it.",
+      "H3: data-jobs pod or query metrics and tracking-db connection-count or long-transaction data were not queried, so the backfill's connection holding and locks are inferred only from timing and tracking-db aggregates.",
+      "H1: no per-instance breakdown or 5xx vs 503 split was available, and no trace data was checked, so it is unknown whether 40 connections would suffice at 417-425 rps with DB latency at baseline.",
+      "No test was run of whether the pool would saturate at 50 with the current DB latency (about 950 ms p99), so whether reverting the cut alone would restore service is untested.",
+      "data-jobs and webhook-ingest returned no metrics for 08:00-10:00Z, so their activity and start times could not be verified; H4 remains untested.",
+      "Only one failed trace and one slow successful trace were retrieved, so the sample is small. Traces do not show the start time of the backfill job, only that a 5,000-row batch was running at 09:15:30Z.",
+      "No lock-holder or pg_stat_activity data was available, so the blocking session and its origin are not confirmed. The Lock:tuple wait is consistent with the backfill but does not prove it is the blocker.",
+      "No 3.9.0 deploy-specific metrics (queries per request, hold time by history length) were checked; H2 is only weakly tested by the trace showing wait time, not query count.",
+      "No tracking-api pool utilisation or connection-wait metrics for 2026-09-14 to 2026-09-15 were checked, so the actual peak concurrency against the 40-connection limit is unknown (H1).",
+      "No tracking-api logs were searched for the effective db.pool.max_size at startup or for pool-timeout error counts and their timing (H1, H2).",
+      "No per-request connection hold time or query count before and after the 3.9.0 deploy was checked (H2).",
+      "No tracking-db slow-query, lock, or long-transaction data for the window was checked, so data-jobs or other batch lock holding cannot be confirmed or excluded (H3).",
+      "No data-jobs run history was checked; only change records were available, and none were found (H3).",
+      "No webhook-ingest traffic volume or connection usage on tracking-db was checked; only change records were available (H4).",
+      "The 22-connection peak in call-0003 is a historical figure from the change record and was not verified against current pool metrics (H1).",
+      "No tracking-api metrics exist before 08:30Z on 15 Sep, so error rate, pool wait and pool in-use before and after the 3.9.0 deploy (14 Sep 14:10Z) cannot be compared. H2 is untested by this comparison.",
+      "tracking-api logs return nothing for 14 Sep 14:00-16:00Z or for the pre-08:50 window on 15 Sep, so log coverage is unverified and the empty results are not a confirmed absence of errors.",
+      "No per-request query count or connection hold time before/after 3.9.0 was available (H2 untested).",
+      "The 08:30-08:45 pre-change baseline is a single 45-minute window and does not establish a long-term baseline."
+    ],
+    "security_findings": [
+      "No prompt-injection or manipulation content was observed in the tool outputs (E37). No security controls are recommended for weakening.",
+      "Telemetry and change records were treated as data only. No instructions in them were followed."
+    ],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "tracking-api error_rate was 0.2-0.4% from 08:30 to 08:50, 1.1% at 08:55, then 11.8% at 09:00 and 12.4-13.1% through 10:00 (5-minute points).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "tracking-api request_rate stayed flat at 417-425 rps from 08:30 through 10:00; no load step at 08:55-09:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "tracking-api db_pool_in_use was 17-18 from 08:30 to 08:45, 31 at 08:50, 40 at 08:55 and held at 40 through 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "tracking-api db_pool_max_size was 50 at 08:30-08:50 and 40 from 08:55 onward.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "tracking-api db_pool_wait_p99 was 1-3 ms through 08:50, 420 ms at 08:55, and 1950-1995 ms from 09:00 through 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "Log at 08:55:20Z from tracking-api: 'config reloaded: db.pool.max_size 50 -> 40'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "tracking-api ERROR logs at 09:02:11, 09:10:02 (route GET /shipments/{id}/events) and 09:21:45 (route GET /shipments/{id}): 'timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)'. Only 4 pool-related log entries exist in the window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Alerts: TrackingApi5xxHigh (critical, 5xx above 5% for 3 minutes) firing at 09:03Z; DbPoolSaturated (warning, pool at 100%) firing at 09:04Z. No earlier alerts in the window.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Kubernetes job/backfill-carrier-events created in namespace data-jobs by data-eng at 08:49:50Z with parallelism 16; 16 of 16 pods running at 08:50:06Z.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "RDS event on tracking-db at 08:58Z: Write IOPS at 98% of provisioned (10000) for 5 minutes.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "tracking-db write_iops was 1480-1520 from 08:30 to 08:45, 8900 at 08:50, 9850 at 08:55 and 9880-9920 from 09:00 to 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "tracking-db lock_waits_per_s was 0 from 08:30 to 08:45, 31 at 08:50, 44 at 08:55 and 45-48 from 09:00 to 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "tracking-db query_latency_p99 was 8-10 ms from 08:30 to 08:45, 140 ms at 08:50, 610 ms at 08:55 and 950-990 ms from 09:00 to 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Ordering: the backfill job was created at 08:49:50Z, and tracking-db write IOPS, lock waits, query latency and tracking-api in-use connections all rise at the 08:50 sample, before the 08:55:20Z pool reload. Pool in-use was already 31 at 08:50 with wait p99 at 3 ms.",
+        "tools": [
+          "get_infra_events",
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0012",
+          "call-0024",
+          "call-0009",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "No tracking-api startup, version, deploy, or 3.9.0 pagination log lines in the window (14 Sep 13:30 to 15 Sep 10:00); the only config-related line is the 08:55:20Z pool reload. Infra events in the window list no tracking-api deploy or restart.",
+        "tools": [
+          "get_infra_events",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0023",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "Per-instance label query for tracking-api (instance='*') returned no series; only aggregate series exist (error_rate, request_rate, db_pool_in_use, db_pool_max_size, db_pool_wait_p99).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "webhook-ingest metrics query for 07:00-10:00 on 15 Sep returned no series and no available series.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "Data quality: tracking-api metrics requested from 13:30 on 14 Sep returned data only from 08:30 on 15 Sep; tracking-db metrics requested from 07:00 returned only from 08:30. No pre-08:30 pool or latency baseline was returned, so the 14 Sep 13:30 to 15 Sep 08:30 range (including the 3.9.0 deploy at 14:10Z) is not covered by metrics.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "tracking-db write_iops stepped from ~1,500 (08:30-08:45) to ~8,900 at 08:50 and ~9,900 from 09:00 onward, staying flat through 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "tracking-db lock_waits_per_s was 0 through 08:45, then 31 at 08:50, 44 at 08:55 and ~45-48 from 09:00 to 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "tracking-db query_latency_p99 was 8-10 ms until 08:45, rose to 140 ms at 08:50, 610 ms at 08:55, and ~950-990 ms from 09:00 through 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "tracking-api db_pool_in_use was 17-18 through 08:45, rose to 31 at 08:50 (before the 08:55 max_size change), reached 40 at 08:55 and stayed pinned at 40 through 10:00. db_pool_max_size was 50 until 08:50 and 40 from 08:55.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "tracking-api db_pool_wait_p99 was 1-3 ms until 08:50, 420 ms at 08:55, and ~1,950-1,995 ms from 09:00 onward. error_rate was 0.2-0.4% until 08:50, 1.1% at 08:55, and 11.8-13.1% from 09:00 through 10:00. request_rate stayed flat at ~417-425 rps across the whole window.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "Error trace t-c16-fail-1 at 09:12:05Z: GET /shipments/{id}/events took 2006 ms and failed with pool_timeout; the db.pool.acquire span took 2000 ms and ended in timeout. Only one error trace was returned for the window, so this is a sample, not a full population.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "Successful trace t-c16-before-1 at 08:40:12Z: 19 ms total, pool acquire 0.4 ms, SELECT shipment_events 7 ms. Successful trace t-c16-slow-1 at 09:12:09Z: 1,452 ms total, pool acquire 480 ms, and SELECT shipment_events 941 ms with wait_event=Lock:tuple. The slow request spent its time waiting on a row lock inside the DB while holding a pooled connection.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "data-jobs trace t-c16-batch-1 at 09:15:30Z: backfill.batch job 'backfill-carrier-events' with batch_size 5000 ran 4,210 ms. Its tracking-db span was INSERT shipment_events ON CONFLICT DO UPDATE for 5,000 rows, taking 4,120 ms. This batch is on shipment_events, the same table the tracking-api SELECT is blocked on.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E27",
+        "summary": "No metrics exist for data-jobs or webhook-ingest in the window; both queries returned empty with no series. This is a gap, not evidence that these services were idle. Their absence means the data-jobs schedule and any webhook-ingest burst could not be confirmed from metrics.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E28",
+        "summary": "Change record: tracking-api config change 'Reduce db.pool.max_size from 50 to 40' at 2026-09-15T08:55:00Z by platform-finops. The change record's details state: 'Peak observed pool usage over the last 14 days was 22 connections.' This 22 is a historical 14-day figure supplied in the change record, not a measurement from the incident window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E29",
+        "summary": "Change record: tracking-api 3.9.0 deploy 'pagination fix for long event histories' at 2026-09-14T14:10:00Z (author tracking-team). The record contains no details on queries per request or connection hold time.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E30",
+        "summary": "The 3.9.0 deploy at 2026-09-14T14:10Z precedes the reported onset (~09:00Z on 2026-09-15) by about 19 hours, and the pool change at 08:55Z is about 5 minutes before onset. Both changes are on the tracking-api service.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E31",
+        "summary": "Infra events for tracking-db in 2026-09-14T13:30Z to 2026-09-15T10:00Z: one event, RDS 'WriteIOPSHigh' at 2026-09-15T08:58:00Z, 'Write IOPS at 98% of provisioned (10000) for 5 minutes.' No other tracking-db events appear in the window.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E32",
+        "summary": "Infra events for tracking-api in 2026-09-14T13:30Z to 2026-09-15T10:00Z: no events returned (empty result, no notes of failure).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E33",
+        "summary": "Change history for data-jobs in 2026-09-14T13:30Z to 2026-09-15T10:00Z: no changes returned (empty result). Separately, change history with kind=scheduled_job across all services in the same window returned no changes (call-0019).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0015",
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E34",
+        "summary": "Change history for webhook-ingest in 2026-09-14T13:30Z to 2026-09-15T10:00Z: no changes returned (empty result). This record covers changes only, not webhook traffic volume.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E35",
+        "summary": "Past incident PIR-2026-024 (2026-05-20, billing-api): 503s after its DB pool was reduced during a cost review. Root cause: 'Pool sized below peak concurrency during month-end invoicing.' Resolution: reverted the pool size and added a month-end load check to pool changes.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E36",
+        "summary": "Runbook rb-db-pool 'Tuning service DB pools': pool size should cover peak concurrent queries with 50% headroom; 'Pool exhaustion is usually a symptom of slow queries; check DB latency before resizing.' Applied to the 22-connection historical peak in call-0003, 50% headroom gives about 33, which is below 40.",
+        "tools": [
+          "get_changes",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0018",
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E37",
+        "summary": "Data quality: the tracking-db and tracking-api infra queries and the data-jobs, webhook-ingest and scheduled_job change queries all returned empty or single-item results, and no tracking-api or tracking-db metrics, logs, or pool-wait data were retrieved. The empty results cannot be cross-checked against a second source. No prompt-injection or manipulation content was seen in the tool outputs.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0013",
+          "call-0014",
+          "call-0015",
+          "call-0016",
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E38",
+        "summary": "Pre-deploy baseline could not be obtained. tracking-api error_rate, db_pool_wait_p99 and db_pool_in_use requested from 2026-09-14T13:30Z to 2026-09-15T08:45Z returned data only from 2026-09-15T08:30Z onward. No points exist for 14 Sep, so the 3.9.0 deploy (14:10Z) and the ~19 hours after it cannot be compared against the pre-deploy period in metrics.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0026",
+          "call-0027",
+          "call-0028"
+        ]
+      },
+      {
+        "id": "E39",
+        "summary": "Within the available pre-cutover window (08:30-08:45Z on 15 Sep, before the 08:55 pool change) tracking-api error_rate was 0.2-0.3%, db_pool_wait_p99 was 1-2 ms, and db_pool_in_use was 17-18. Error rates were already low and pool wait was negligible before the pool change, so the pool change itself is not shown to coincide with a rise in errors.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0026",
+          "call-0027",
+          "call-0028"
+        ]
+      },
+      {
+        "id": "E40",
+        "summary": "tracking-api log search for timeout/pool_timeout/503/500/error from 2026-09-14T13:30Z to 2026-09-15T08:50Z returned zero entries. A plain tracking-api log search for 14 Sep 14:00-16:00Z also returned zero entries. Logs for tracking-api appear absent for this period, so the absence of errors before 08:50 is not a confirmed negative.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0029",
+          "call-0030"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 17,
+    "input_tokens": 161695,
+    "output_tokens": 37225,
+    "cache_read_tokens": 84118,
+    "cache_write_tokens": 52426,
+    "reasoning_tokens": 19463,
+    "cost_usd": 0.092609,
+    "unpriced_calls": 0,
+    "tool_calls": 30,
+    "latency_ms": 194351.81
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 2295,
+      "output_tokens": 2619,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1231,
+      "cost_usd": 0.001539,
+      "unpriced_calls": 0,
+      "tool_calls": 2,
+      "latency_ms": 12855.78
+    },
+    "observability": {
+      "llm_calls": 7,
+      "input_tokens": 87064,
+      "output_tokens": 9828,
+      "cache_read_tokens": 56319,
+      "cache_write_tokens": 30725,
+      "reasoning_tokens": 3514,
+      "cost_usd": 0.009321,
+      "unpriced_calls": 0,
+      "tool_calls": 13,
+      "latency_ms": 45137.38
+    },
+    "dependency": {
+      "llm_calls": 3,
+      "input_tokens": 29647,
+      "output_tokens": 3860,
+      "cache_read_tokens": 15943,
+      "cache_write_tokens": 13696,
+      "reasoning_tokens": 723,
+      "cost_usd": 0.003802,
+      "unpriced_calls": 0,
+      "tool_calls": 7,
+      "latency_ms": 16159.45
+    },
+    "change_history": {
+      "llm_calls": 3,
+      "input_tokens": 19871,
+      "output_tokens": 4414,
+      "cache_read_tokens": 11856,
+      "cache_write_tokens": 8005,
+      "reasoning_tokens": 1501,
+      "cost_usd": 0.003328,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 19789.31
+    },
+    "reasoning": {
+      "llm_calls": 1,
+      "input_tokens": 6178,
+      "output_tokens": 8523,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 7360,
+      "cost_usd": 0.044297,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 47820.53
+    },
+    "critic": {
+      "llm_calls": 1,
+      "input_tokens": 7008,
+      "output_tokens": 4528,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 4416,
+      "cost_usd": 0.027632,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 35950.45
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 9632,
+      "output_tokens": 3453,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 718,
+      "cost_usd": 0.00269,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 16638.91
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 15,
+      "input_tokens": 148509,
+      "output_tokens": 24174,
+      "cache_read_tokens": 84118,
+      "cache_write_tokens": 52426,
+      "reasoning_tokens": 7687,
+      "cost_usd": 0.02068,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 110580.83
+    },
+    "o4-mini-2025-04-16": {
+      "llm_calls": 2,
+      "input_tokens": 13186,
+      "output_tokens": 13051,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 11776,
+      "cost_usd": 0.071929,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 83770.98
+    }
+  },
+  "tool_calls": 30,
+  "latency_s": 158.441,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "partner-api",
+            "kind": "gateway",
+            "depends_on": [
+              "tracking-api"
+            ],
+            "notes": null
+          },
+          {
+            "name": "tracking-api",
+            "kind": "service",
+            "depends_on": [
+              "tracking-db",
+              "events-queue"
+            ],
+            "notes": "Read-mostly API over shipment events. Connection pool acquire timeout 2000ms."
+          },
+          {
+            "name": "webhook-ingest",
+            "kind": "service",
+            "depends_on": [
+              "tracking-db",
+              "events-queue"
+            ],
+            "notes": "Writes carrier webhook events into tracking-db."
+          },
+          {
+            "name": "data-jobs",
+            "kind": "batch",
+            "depends_on": [
+              "tracking-db"
+            ],
+            "notes": "Kubernetes namespace for ad-hoc data maintenance jobs."
+          },
+          {
+            "name": "events-queue",
+            "kind": "queue",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "tracking-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": "Single primary, provisioned 10000 write IOPS."
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-01T09:40:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T14:10:00Z",
+            "kind": "deploy",
+            "service": "tracking-api",
+            "summary": "tracking-api 3.9.0 - pagination fix for long event histories",
+            "author": "tracking-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-15T08:55:00Z",
+            "kind": "config",
+            "service": "tracking-api",
+            "summary": "Reduce db.pool.max_size from 50 to 40 (FinOps right-sizing of DB connections)",
+            "author": "platform-finops",
+            "details": "Peak observed pool usage over the last 14 days was 22 connections."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-31T13:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T14:10:00Z",
+            "kind": "deploy",
+            "service": "tracking-api",
+            "summary": "tracking-api 3.9.0 - pagination fix for long event histories",
+            "author": "tracking-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-15T08:55:00Z",
+            "kind": "config",
+            "service": "tracking-api",
+            "summary": "Reduce db.pool.max_size from 50 to 40 (FinOps right-sizing of DB connections)",
+            "author": "platform-finops",
+            "details": "Peak observed pool usage over the last 14 days was 22 connections."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-db",
+            "name": "query_latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 8.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 10.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 140.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 610.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 950.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 980.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 960.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 970.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 985.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 960.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 975.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 980.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 965.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 970.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 985.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-db",
+            "name": "write_iops",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 1480.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 1520.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 1500.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 1510.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 8900.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 9850.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 9880.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 9910.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 9890.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 9870.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 9920.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 9890.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 9880.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 9910.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 9890.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-db",
+            "name": "lock_waits_per_s",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 48.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 48.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 48.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 46.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "query_latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "write_iops",
+            "labels": {}
+          },
+          {
+            "name": "lock_waits_per_s",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-api",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 0.4
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 1.1
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 11.8
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 12.6
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 12.9
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 12.4
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 13.1
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 12.7
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 12.5
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 12.9
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 13.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 12.6
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 12.8
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 12.4
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 12.9
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "request_rate",
+            "unit": "rps",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 422.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 419.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 425.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 421.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 417.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 423.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 424.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 421.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 419.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 422.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 417.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 423.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 421.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 420.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "db_pool_in_use",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 40.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "db_pool_max_size",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 40.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "db_pool_wait_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 1950.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 1980.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 1990.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 1970.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 1985.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 1990.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 1975.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 1980.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 1995.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 1985.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 1970.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 1990.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 1980.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "request_rate",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_in_use",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_max_size",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_wait_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api",
+        "status": "error",
+        "limit": 30
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c16-fail-1",
+            "start": "2026-09-15T09:12:05Z",
+            "duration_ms": 2006.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "tracking-api",
+                "operation": "GET /shipments/{id}/events",
+                "duration_ms": 2006.0,
+                "status": "error",
+                "attrs": {
+                  "error": "pool_timeout"
+                }
+              },
+              {
+                "service": "tracking-api",
+                "operation": "db.pool.acquire",
+                "duration_ms": 2000.0,
+                "status": "error",
+                "attrs": {
+                  "error": "timeout"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "data-jobs"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-api",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 0.4
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 1.1
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 11.8
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 12.6
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 12.9
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 12.4
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 13.1
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 12.7
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 12.5
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 12.9
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 13.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 12.6
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 12.8
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 12.4
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 12.9
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "request_rate",
+            "unit": "rps",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 422.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 419.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 425.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 421.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 417.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 423.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 424.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 421.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 419.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 422.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 417.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 423.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 421.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 420.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "db_pool_in_use",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 40.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "db_pool_max_size",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 50.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 40.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-api",
+            "name": "db_pool_wait_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 1950.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 1980.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 1990.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 1970.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 1985.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 1990.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 1975.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 1980.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 1995.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 1985.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 1970.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 1990.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 1980.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "request_rate",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_in_use",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_max_size",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_wait_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "query": "pool",
+        "service": "tracking-api",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-15T08:55:20Z",
+            "service": "tracking-api",
+            "level": "INFO",
+            "message": "config reloaded: db.pool.max_size 50 -> 40",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-15T09:02:11Z",
+            "service": "tracking-api",
+            "level": "ERROR",
+            "message": "timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)",
+            "attrs": {
+              "route": "GET /shipments/{id}/events"
+            }
+          },
+          {
+            "ts": "2026-09-15T09:10:02Z",
+            "service": "tracking-api",
+            "level": "ERROR",
+            "message": "timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)",
+            "attrs": {
+              "route": "GET /shipments/{id}/events"
+            }
+          },
+          {
+            "ts": "2026-09-15T09:21:45Z",
+            "service": "tracking-api",
+            "level": "ERROR",
+            "message": "timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)",
+            "attrs": {
+              "route": "GET /shipments/{id}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-09-15T09:03:00Z",
+            "name": "TrackingApi5xxHigh",
+            "severity": "critical",
+            "entity": "tracking-api",
+            "state": "firing",
+            "summary": "tracking-api 5xx above 5% for 3 minutes"
+          },
+          {
+            "ts": "2026-09-15T09:04:00Z",
+            "name": "DbPoolSaturated",
+            "severity": "warning",
+            "entity": "tracking-api",
+            "state": "firing",
+            "summary": "tracking-api DB pool at 100% utilisation"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-15T08:49:50Z",
+            "source": "kubernetes",
+            "entity": "job/backfill-carrier-events",
+            "reason": "SuccessfulCreate",
+            "message": "Job created in namespace data-jobs by data-eng; parallelism 16."
+          },
+          {
+            "ts": "2026-09-15T08:50:06Z",
+            "source": "kubernetes",
+            "entity": "job/backfill-carrier-events",
+            "reason": "Scaled",
+            "message": "16 of 16 pods running."
+          },
+          {
+            "ts": "2026-09-15T08:58:00Z",
+            "source": "rds",
+            "entity": "tracking-db",
+            "reason": "WriteIOPSHigh",
+            "message": "Write IOPS at 98% of provisioned (10000) for 5 minutes."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "entity": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-15T08:58:00Z",
+            "source": "rds",
+            "entity": "tracking-db",
+            "reason": "WriteIOPSHigh",
+            "message": "Write IOPS at 98% of provisioned (10000) for 5 minutes."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "entity": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "data-jobs"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "pool exhaustion connection pool"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-024",
+            "date": "2026-05-20T00:00:00Z",
+            "title": "billing-api timeouts after connection pool reduction",
+            "summary": "billing-api returned 503s after its DB pool was reduced during a cost review.",
+            "root_cause": "Pool sized below peak concurrency during month-end invoicing.",
+            "resolution": "Reverted the pool size; added a month-end load check to pool changes."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "tracking-api pool"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": [
+          {
+            "id": "rb-db-pool",
+            "title": "Tuning service DB pools",
+            "body": "Pool size should cover peak concurrent queries with 50% headroom. Pool exhaustion is usually a symptom of slow queries; check DB latency before resizing."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "kind": "scheduled_job"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "service": "tracking-api",
+        "status": "ok",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c16-before-1",
+            "start": "2026-09-15T08:40:12Z",
+            "duration_ms": 19.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "tracking-api",
+                "operation": "GET /shipments/{id}/events",
+                "duration_ms": 19.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "tracking-api",
+                "operation": "db.pool.acquire",
+                "duration_ms": 0.4,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "tracking-db",
+                "operation": "SELECT shipment_events",
+                "duration_ms": 7.0,
+                "status": "ok",
+                "attrs": {
+                  "rows": 23
+                }
+              }
+            ]
+          },
+          {
+            "trace_id": "t-c16-slow-1",
+            "start": "2026-09-15T09:12:09Z",
+            "duration_ms": 1452.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "tracking-api",
+                "operation": "GET /shipments/{id}/events",
+                "duration_ms": 1452.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "tracking-api",
+                "operation": "db.pool.acquire",
+                "duration_ms": 480.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "tracking-db",
+                "operation": "SELECT shipment_events",
+                "duration_ms": 941.0,
+                "status": "ok",
+                "attrs": {
+                  "rows": 23,
+                  "wait_event": "Lock:tuple"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "data-jobs",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c16-batch-1",
+            "start": "2026-09-15T09:15:30Z",
+            "duration_ms": 4210.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "data-jobs",
+                "operation": "backfill.batch",
+                "duration_ms": 4210.0,
+                "status": "ok",
+                "attrs": {
+                  "job": "backfill-carrier-events",
+                  "batch_size": 5000
+                }
+              },
+              {
+                "service": "tracking-db",
+                "operation": "INSERT shipment_events ON CONFLICT DO UPDATE",
+                "duration_ms": 4120.0,
+                "status": "ok",
+                "attrs": {
+                  "rows": 5000
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api",
+        "labels": {
+          "instance": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": [
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "request_rate",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_in_use",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_max_size",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_wait_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "query": "version|deploy|startup|started|config|3\\.9\\.0|pagination",
+        "service": "tracking-api",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-15T08:55:20Z",
+            "service": "tracking-api",
+            "level": "INFO",
+            "message": "config reloaded: db.pool.max_size 50 -> 40",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T07:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-db",
+            "name": "query_latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 8.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 10.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 140.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 610.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 950.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 980.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 960.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 970.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 985.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 960.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 975.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 980.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 965.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 970.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 985.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-db",
+            "name": "write_iops",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 1480.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 1520.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 1500.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 1510.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 8900.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 9850.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 9880.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 9910.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 9890.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 9870.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 9920.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 9890.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 9880.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 9910.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 9900.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 9890.0
+              }
+            ]
+          },
+          {
+            "service": "tracking-db",
+            "name": "lock_waits_per_s",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-15T08:50:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-09-15T08:55:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-09-15T09:00:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T09:05:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-09-15T09:10:00Z",
+                "value": 48.0
+              },
+              {
+                "ts": "2026-09-15T09:15:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-09-15T09:20:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T09:25:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-09-15T09:30:00Z",
+                "value": 48.0
+              },
+              {
+                "ts": "2026-09-15T09:35:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T09:40:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-09-15T09:45:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-09-15T09:50:00Z",
+                "value": 48.0
+              },
+              {
+                "ts": "2026-09-15T09:55:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-09-15T10:00:00Z",
+                "value": 46.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "query_latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "write_iops",
+            "labels": {}
+          },
+          {
+            "name": "lock_waits_per_s",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T07:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T08:45:00Z",
+        "service": "tracking-api",
+        "name": "error_rate"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-api",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 0.2
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "error_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T08:45:00Z",
+        "service": "tracking-api",
+        "name": "db_pool_wait_p99"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-api",
+            "name": "db_pool_wait_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 1.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "db_pool_wait_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T08:45:00Z",
+        "service": "tracking-api",
+        "name": "db_pool_in_use"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "tracking-api",
+            "name": "db_pool_in_use",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-15T08:30:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-09-15T08:35:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-09-15T08:40:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-09-15T08:45:00Z",
+                "value": 18.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "db_pool_in_use",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-15T08:50:00Z",
+        "query": "timeout|pool_timeout|503|500|error",
+        "service": "tracking-api",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T14:00:00Z",
+        "end": "2026-09-14T16:00:00Z",
+        "service": "tracking-api",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    }
+  ]
+}

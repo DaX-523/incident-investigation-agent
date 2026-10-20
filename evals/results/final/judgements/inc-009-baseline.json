@@ -1,0 +1,19 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.01225,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same primary cause as the key: es-data-3 failed, and because the products index had been left at number_of_replicas=0, two primary shards became unassigned and searches returned partial or failed results. It matches both the originating change and the mechanism.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2
+    ],
+    "unsupported_claims": [
+      "\"footer-only change\" for web-frontend v12.3.0",
+      "\"detected by users first\""
+    ]
+  }
+}

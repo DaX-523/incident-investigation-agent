@@ -1,0 +1,19 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.016129,
+  "verdict": {
+    "root_cause": "wrong",
+    "root_cause_reason": "The report\u2019s primary cause is a campaign-start-driven overload of the carrier trunk above 15 attempts/sec, whereas the key root cause is a self-sustaining 429 retry storm caused by fixed-interval retries that synchronize into waves. It mentions retries and backoff as follow-up fixes, but not as the originating mechanism.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      2
+    ],
+    "unsupported_claims": [
+      "\"The K-2214 campaign start at 2026-03-10T04:00Z raised INVITE attempt volume on the carrier trunk above the carrier's enforced limit of 15 call attempts/second\"",
+      "\"The step that marked contacts UNREACHABLE without a call reaching the phone is not yet confirmed\"",
+      "\"The onset date should be re-checked against the 2026-03-11 report date\""
+    ]
+  }
+}

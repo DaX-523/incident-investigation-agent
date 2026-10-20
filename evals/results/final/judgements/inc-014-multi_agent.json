@@ -1,0 +1,15 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.013013,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same primary mechanism as the key: pricing-cache failed over to a replica that was still mid full-resync, leaving the new primary effectively cold and causing a cache-miss storm that cascaded into rates-db saturation and search timeouts.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": []
+  }
+}

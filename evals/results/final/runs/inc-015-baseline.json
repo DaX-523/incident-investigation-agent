@@ -1,0 +1,1679 @@
+{
+  "scenario": "inc-015",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "~8% of order placements failing with connect timeouts to payments",
+    "outcome": "conclusive",
+    "summary": "The connect timeouts to payments-svc are DNS lookups timing out, not payments-svc being slow or down. At 02:05 UTC an EKS managed node-group upgrade drained node ip-10-2-4-11 and evicted 2 of 3 CoreDNS replicas. The replacements have been Pending since 02:06 with \"Insufficient cpu\", and CoreDNS still shows 1 ready replica at 03:25. CoreDNS p99 latency rose from about 2 ms to about 4.9 s, and order-svc's dns.lookup for payments-svc times out at 2000 ms, the same budget as the connect timeout. order-svc 7.3.1 (okhttp 5, empty connection pool) did not cause the outage by itself. It multiplied the exposure: new connections to payments-svc rose from about 4/s to about 44/s, and each new connection needs a DNS lookup. Rolling back 7.3.1 alone will not restore DNS capacity. The recommended first step is to restore CoreDNS capacity and pause the node-group upgrade. Rolling back 7.3.1 is a reasonable secondary mitigation to reduce DNS load, but its effect is unverified.",
+    "root_cause": "CoreDNS capacity loss. An EKS managed node-group auto-upgrade (AMI 2026.08.2, max unavailable 1) drained node ip-10-2-4-11 at 02:05 and evicted 2 of 3 coredns pods. The replacement pods could not schedule (0/9 nodes had sufficient CPU), so cluster DNS ran on 1 replica. DNS lookups from order-svc to payments-svc then exceeded the 2000 ms connect budget for a share of new connections. The order-svc 7.3.1 HTTP client change (empty pool, so about 10x more new connections and per-connection DNS lookups) amplified the impact. It is a contributing factor, not the trigger.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "CoreDNS lost two of three replicas during the node-group drain, and the surviving replica plus unschedulable replacements cannot serve DNS for order-svc. Slow or timed-out lookups then surface as 'connect timeout' after 2000 ms.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6"
+        ],
+        "contradicting_evidence": [
+          "E7"
+        ],
+        "facts": [
+          {
+            "text": "CoreDNS ready_replicas fell from 3 to 1 at 02:05 and stayed at 1 through 03:25.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Node drain at 02:05:31 evicted coredns pods hx2lq and q8vtd. Replacements m2kd9 and z7rtw were Pending at 02:06:15 with 'Insufficient cpu' on 0/9 nodes.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "CoreDNS dns_request_latency_p99 went from about 2-3 ms to 3100 ms at 02:05 and about 4900 ms from 02:10 onward.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Failing trace: dns.lookup payments-svc.prod.svc.cluster.local took 2000 ms with error 'timeout' against resolver 10.96.0.10, and the POST /orders span failed with connect_timeout at 2004 ms.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "A successful trace at 02:16:33 on 7.3.1 still had a 38 ms DNS lookup versus about 0.2 ms reused-connection time before the change. DNS is slow but intermittent, which fits about 8% failures.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "The NodeDrain event is part of a managed node-group upgrade that started at 01:55.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "CoreDNS logs returned no entries for 01:55-02:30 and no dns|lookup|SERVFAIL|timeout log lines were found. The source may not ingest CoreDNS logs, so the absence is not evidence of health.",
+            "evidence_ids": [
+              "E7"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "The order-svc 7.3.1 okhttp-5 migration (new connection pool defaults) is a contributing amplifier. It causes connection churn, and each new connection performs a DNS lookup on the failing path. It is not the sole root cause.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E8",
+          "E9",
+          "E10"
+        ],
+        "contradicting_evidence": [
+          "E11",
+          "E12"
+        ],
+        "facts": [
+          {
+            "text": "order-svc new_connections_per_s rose from about 4-5 to about 41-45 starting at 02:00-02:05, while the pool showed 0 idle connections to payments-svc with pool_max_idle 5.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Pre-deploy trace on 7.3.0 used a reused connection with no DNS span, so the 7.3.0 path avoided DNS on the request path.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "Deploy 7.3.1 (okhttp 5, new pool defaults, dependency updates) completed 12/12 pods at 02:04.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "From the 02:00 deploy until about 02:05, 7.3.1 ran with about 19 new connections/s and error rate stayed at 0.3%. The client change alone did not produce errors while CoreDNS was healthy.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "The 2000 ms connect failures appear only after the CoreDNS change at 02:05, and the traces show DNS lookup as the slow step, not TCP connect.",
+            "evidence_ids": [
+              "E12"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "payments-svc is degraded or unreachable, as the reporter suspects (ruled out as primary).",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E13",
+          "E14"
+        ],
+        "facts": [
+          {
+            "text": "payments-svc latency_p99 stayed at 177-185 ms and error_rate at 0.1% across 01:30-02:30.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "A payments-svc trace on 02:16 returned POST /charges in 176 ms with OK status.",
+            "evidence_ids": [
+              "E14"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "A CNI or node-network problem on the drained node or in the cluster network path to payments-svc.",
+        "status": "open",
+        "confidence": "low",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E15"
+        ],
+        "facts": [
+          {
+            "text": "The only infra events are the node-group upgrade and CoreDNS pod eviction/scheduling. No network events were recorded, and the trace timing points at DNS.",
+            "evidence_ids": [
+              "E15"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Restore CoreDNS capacity now: scale the coredns deployment's pending replicas by freeing CPU (evict or resize non-critical pods, or add or uncordon nodes in the node group), or move coredns to a node group with spare capacity. Confirm ready_replicas returns to 3 and dns_request_latency_p99 returns to about 2 ms.",
+        "rationale": "The DNS capacity loss is the root cause. Pending coredns pods have been unscheduled since 02:06, and the error rate stays about 8% until DNS recovers.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E3",
+          "E6",
+          "E15"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Pause the EKS managed node-group upgrade (AMI 2026.08.2) until CoreDNS is back to 3 ready replicas, and check that remaining drains will not evict more DNS pods.",
+        "rationale": "The rolling upgrade drained a node that held CoreDNS pods, with max unavailable 1. Further drains can cut DNS capacity again.",
+        "evidence_ids": [
+          "E2",
+          "E6",
+          "E15"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "mitigate",
+        "action": "If DNS cannot be restored quickly, consider rolling order-svc back to 7.3.0 as a secondary mitigation. Verify the effect on error rate and new_connections_per_s before relying on it. Do not treat it as the fix, because DNS capacity stays down.",
+        "rationale": "Rolling back removes the connection churn that multiplies DNS lookups. Its effect is an assumption until measured, since 7.3.0 still needs DNS on any new connection.",
+        "evidence_ids": [
+          "E5",
+          "E8",
+          "E9",
+          "E10",
+          "E11",
+          "E12"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "fix",
+        "action": "Before re-releasing the okhttp-5 client, fix the connection pool so connections are reused under load (tune max idle and keep-alive, or pre-warm). Load-test new_connections_per_s and DNS lookup rate in staging.",
+        "rationale": "Pool defaults caused roughly 10x new connections, each needing DNS. Reducing churn removes the amplifier.",
+        "evidence_ids": [
+          "E5",
+          "E8",
+          "E9",
+          "E11",
+          "E12"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "prevent",
+        "action": "Protect cluster DNS: add a PodDisruptionBudget for coredns (minAvailable 2), reserve CPU or set a priorityClass for coredns, run it on a dedicated system node group, and roll out NodeLocal DNSCache as the runbook already plans.",
+        "rationale": "A single node drain removed two of three DNS replicas, and the replacements could not schedule. Those guardrails would have prevented the outage.",
+        "evidence_ids": [
+          "E2",
+          "E6",
+          "E15"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Add alerts on coredns ready_replicas below desired, on dns_request_latency_p99 above a threshold, and on order-svc new_connections_per_s spikes. Ensure CoreDNS logs and metrics are ingested. No CoreDNS alert fired during this incident, and the order-svc alert fired only at 02:12.",
+        "rationale": "The DNS degradation at 02:05 went unalerted for about 7 minutes, and no CoreDNS log lines were visible.",
+        "evidence_ids": [
+          "E1",
+          "E3",
+          "E7"
+        ]
+      }
+    ],
+    "missing_data": [
+      "CoreDNS logs and error counters for 01:55-02:30 returned nothing. It is unknown whether CoreDNS logs are ingested or whether it logged errors. Confirm the data source.",
+      "No query_metrics series for inventory-svc, so I could not confirm whether other DNS-dependent calls share the failure.",
+      "No error-rate or per-replica breakdown for coredns or order-svc by pod, zone, or node. The 8% vs 1-of-3 replica relationship is unquantified.",
+      "The vendor status report is unavailable (not_found), so there is no external corroboration.",
+      "No infra-event data for network or CNI on ip-10-2-4-11 beyond the drain. A network-layer cause is not fully excluded.",
+      "Whether coredns has a PodDisruptionBudget or priorityClass is not shown by any tool result.",
+      "The effect of rolling back to 7.3.0 on errors is not measured. It is an assumption."
+    ],
+    "gaps": [
+      "get_external_report {'name': 'vendor status'} failed: not_found: no report named 'vendor status'; available: []"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Should the EKS node-group upgrade be paused now? It is still running with max unavailable 1 and is the trigger for the DNS loss.",
+      "Is the order-svc rollback to 7.3.0 wanted as a secondary mitigation while CoreDNS is restored? It should be validated because it is not a fix.",
+      "Why is CoreDNS still at 1 ready replica 80 minutes later? Are the replacement pods still Pending for CPU, and what is the node group's capacity?",
+      "Does the orders team's 2000 ms connect timeout with no retry on connect failure need revisiting, given that DNS is on the connect path?",
+      "Are CoreDNS logs and per-replica DNS metrics being ingested? They returned nothing during the incident."
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "CoreDNS ready_replicas fell from 3 to 1 at 02:05 and stayed at 1 through 03:25.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "Node drain at 02:05:31 evicted coredns pods hx2lq and q8vtd. Replacements m2kd9 and z7rtw were Pending at 02:06:15 with 'Insufficient cpu' on 0/9 nodes.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0008",
+          "call-0017",
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "CoreDNS dns_request_latency_p99 went from about 2-3 ms to 3100 ms at 02:05 and about 4900 ms from 02:10 onward.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Failing trace: dns.lookup payments-svc.prod.svc.cluster.local took 2000 ms with error 'timeout' against resolver 10.96.0.10, and the POST /orders span failed with connect_timeout at 2004 ms.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "A successful trace at 02:16:33 on 7.3.1 still had a 38 ms DNS lookup versus about 0.2 ms reused-connection time before the change. DNS is slow but intermittent, which fits about 8% failures.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0022",
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "The NodeDrain event is part of a managed node-group upgrade that started at 01:55.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "CoreDNS logs returned no entries for 01:55-02:30 and no dns|lookup|SERVFAIL|timeout log lines were found. The source may not ingest CoreDNS logs, so the absence is not evidence of health.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "order-svc new_connections_per_s rose from about 4-5 to about 41-45 starting at 02:00-02:05, while the pool showed 0 idle connections to payments-svc with pool_max_idle 5.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Pre-deploy trace on 7.3.0 used a reused connection with no DNS span, so the 7.3.0 path avoided DNS on the request path.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Deploy 7.3.1 (okhttp 5, new pool defaults, dependency updates) completed 12/12 pods at 02:04.",
+        "tools": [
+          "get_changes",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "From the 02:00 deploy until about 02:05, 7.3.1 ran with about 19 new connections/s and error rate stayed at 0.3%. The client change alone did not produce errors while CoreDNS was healthy.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "The 2000 ms connect failures appear only after the CoreDNS change at 02:05, and the traces show DNS lookup as the slow step, not TCP connect.",
+        "tools": [
+          "get_traces",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "payments-svc latency_p99 stayed at 177-185 ms and error_rate at 0.1% across 01:30-02:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "A payments-svc trace on 02:16 returned POST /charges in 176 ms with OK status.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "The only infra events are the node-group upgrade and CoreDNS pod eviction/scheduling. No network events were recorded, and the trace timing points at DNS.",
+        "tools": [
+          "get_infra_events",
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0008",
+          "call-0018",
+          "call-0010"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 7,
+    "input_tokens": 106918,
+    "output_tokens": 11360,
+    "cache_read_tokens": 83118,
+    "cache_write_tokens": 23784,
+    "reasoning_tokens": 4162,
+    "cost_usd": 0.009487,
+    "unpriced_calls": 0,
+    "tool_calls": 23,
+    "latency_ms": 53899.7
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 7,
+      "input_tokens": 106918,
+      "output_tokens": 11360,
+      "cache_read_tokens": 83118,
+      "cache_write_tokens": 23784,
+      "reasoning_tokens": 4162,
+      "cost_usd": 0.009487,
+      "unpriced_calls": 0,
+      "tool_calls": 23,
+      "latency_ms": 53899.7
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 7,
+      "input_tokens": 106918,
+      "output_tokens": 11360,
+      "cache_read_tokens": 83118,
+      "cache_write_tokens": 23784,
+      "reasoning_tokens": 4162,
+      "cost_usd": 0.009487,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 53899.7
+    }
+  },
+  "tool_calls": 23,
+  "latency_s": 53.937,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {
+        "service": "order-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "mobile-gateway",
+            "kind": "service",
+            "depends_on": [
+              "order-svc",
+              "cart-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "order-svc",
+            "kind": "service",
+            "depends_on": [
+              "payments-svc",
+              "inventory-svc",
+              "orders-db",
+              "coredns"
+            ],
+            "notes": "12 pods. Outbound connect timeout 2000ms, no retry on connect failure."
+          },
+          {
+            "name": "payments-svc",
+            "kind": "service",
+            "depends_on": [
+              "coredns"
+            ],
+            "notes": null
+          },
+          {
+            "name": "inventory-svc",
+            "kind": "service",
+            "depends_on": [
+              "coredns"
+            ],
+            "notes": null
+          },
+          {
+            "name": "orders-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "coredns",
+            "kind": "k8s_cluster_dns",
+            "depends_on": [],
+            "notes": "Cluster DNS (CoreDNS) deployment, 3 replicas, service IP 10.96.0.10."
+          }
+        ],
+        "upstream": [
+          "mobile-gateway"
+        ],
+        "downstream": [
+          "coredns",
+          "inventory-svc",
+          "orders-db",
+          "payments-svc"
+        ]
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_alerts",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-09-03T02:12:00Z",
+            "name": "OrderErrorRateHigh",
+            "severity": "critical",
+            "entity": "order-svc",
+            "state": "firing",
+            "summary": "order-svc error rate above 5% for 3 minutes"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-03T01:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-03T02:00:00Z",
+            "kind": "deploy",
+            "service": "order-svc",
+            "summary": "order-svc 7.3.1 - migrate HTTP client to okhttp 5 (new connection pool defaults); dependency updates",
+            "author": "orders-team",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-03T01:45:00Z",
+        "end": "2026-09-03T02:15:00Z",
+        "service": "order-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-03T02:00:20Z",
+            "service": "order-svc",
+            "level": "INFO",
+            "message": "rollout started for order-svc 7.3.1",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-03T02:04:05Z",
+            "service": "order-svc",
+            "level": "INFO",
+            "message": "rollout complete: 12/12 pods on 7.3.1",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-03T02:09:12Z",
+            "service": "order-svc",
+            "level": "ERROR",
+            "message": "POST /orders failed: upstream connect timeout to payments-svc after 2000ms",
+            "attrs": {
+              "version": "7.3.1",
+              "http_client": "okhttp-5.0"
+            }
+          },
+          {
+            "ts": "2026-09-03T02:12:31Z",
+            "service": "order-svc",
+            "level": "WARN",
+            "message": "connection pool: 0 idle connections to payments-svc, opening new connection",
+            "attrs": {
+              "version": "7.3.1",
+              "pool_max_idle": 5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-03T01:30:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "service": "order-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "order-svc",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 2.1
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 7.6
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 8.4
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 8.1
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 7.9
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 8.6
+              }
+            ]
+          },
+          {
+            "service": "order-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 440.0
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 452.0
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 438.0
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 446.0
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 450.0
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 441.0
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 455.0
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 1380.0
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 2060.0
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 2080.0
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 2070.0
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 2090.0
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 2060.0
+              }
+            ]
+          },
+          {
+            "service": "order-svc",
+            "name": "new_connections_per_s",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 4.0
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 4.0
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 4.0
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 4.0
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 19.0
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 41.0
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 43.0
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 42.0
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 44.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "new_connections_per_s",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-03T01:30:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "service": "coredns"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "coredns",
+            "name": "dns_request_latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 3100.0
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 4800.0
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 4900.0
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 4850.0
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 4900.0
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 4880.0
+              }
+            ]
+          },
+          {
+            "service": "coredns",
+            "name": "ready_replicas",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 1.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "dns_request_latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "ready_replicas",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-03T01:30:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "payments-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 182.0
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 178.0
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 185.0
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 180.0
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 183.0
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 179.0
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 181.0
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 184.0
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 180.0
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 177.0
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 182.0
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 179.0
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 183.0
+              }
+            ]
+          },
+          {
+            "service": "payments-svc",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T01:30:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T01:35:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T01:40:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T01:45:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T01:50:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T01:55:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:00:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:05:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:10:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:15:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:20:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 0.1
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "error_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-03T01:30:00Z",
+        "end": "2026-09-03T02:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-03T01:55:00Z",
+            "source": "eks",
+            "entity": "nodegroup/np-general",
+            "reason": "NodegroupUpdateStarted",
+            "message": "Managed node group auto-upgrade started (AMI release 2026.08.2), max unavailable 1."
+          },
+          {
+            "ts": "2026-09-03T02:05:31Z",
+            "source": "kubernetes",
+            "entity": "node/ip-10-2-4-11",
+            "reason": "NodeDrain",
+            "message": "Draining node for node group upgrade; evicting 14 pods."
+          },
+          {
+            "ts": "2026-09-03T02:05:40Z",
+            "source": "kubernetes",
+            "entity": "pod/coredns-7c9f8-hx2lq",
+            "reason": "Evicted",
+            "message": "Pod evicted from node ip-10-2-4-11 (node drain)."
+          },
+          {
+            "ts": "2026-09-03T02:05:42Z",
+            "source": "kubernetes",
+            "entity": "pod/coredns-7c9f8-q8vtd",
+            "reason": "Evicted",
+            "message": "Pod evicted from node ip-10-2-4-11 (node drain)."
+          },
+          {
+            "ts": "2026-09-03T02:06:15Z",
+            "source": "kubernetes",
+            "entity": "deployment/coredns",
+            "reason": "FailedScheduling",
+            "message": "Replacement pods coredns-7c9f8-m2kd9, coredns-7c9f8-z7rtw Pending: 0/9 nodes are available: 9 Insufficient cpu."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-03T01:55:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "service": "coredns",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-03T02:05:00Z",
+        "end": "2026-09-03T02:20:00Z",
+        "service": "order-svc",
+        "status": "error",
+        "limit": 10
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c15-fail-1",
+            "start": "2026-09-03T02:14:58Z",
+            "duration_ms": 2004.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "order-svc",
+                "operation": "POST /orders",
+                "duration_ms": 2004.0,
+                "status": "error",
+                "attrs": {
+                  "version": "7.3.1",
+                  "error": "connect_timeout"
+                }
+              },
+              {
+                "service": "order-svc",
+                "operation": "dns.lookup payments-svc.prod.svc.cluster.local",
+                "duration_ms": 2000.0,
+                "status": "error",
+                "attrs": {
+                  "resolver": "10.96.0.10",
+                  "error": "timeout"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-03T02:00:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "query": "dns|lookup|resolve|NXDOMAIN|SERVFAIL|i/o timeout",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "get_changes",
+      "args": {
+        "service": "coredns"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-03T01:55:00Z",
+        "end": "2026-09-03T02:15:00Z",
+        "query": "config|pool|dns|resolv|start|version|timeout",
+        "service": "order-svc",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-03T02:00:20Z",
+            "service": "order-svc",
+            "level": "INFO",
+            "message": "rollout started for order-svc 7.3.1",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-03T02:09:12Z",
+            "service": "order-svc",
+            "level": "ERROR",
+            "message": "POST /orders failed: upstream connect timeout to payments-svc after 2000ms",
+            "attrs": {
+              "version": "7.3.1",
+              "http_client": "okhttp-5.0"
+            }
+          },
+          {
+            "ts": "2026-09-03T02:12:31Z",
+            "service": "order-svc",
+            "level": "WARN",
+            "message": "connection pool: 0 idle connections to payments-svc, opening new connection",
+            "attrs": {
+              "version": "7.3.1",
+              "pool_max_idle": 5
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "coredns"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "coredns dns node drain"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": [
+          {
+            "id": "rb-dns-errors",
+            "title": "DNS resolution errors in the cluster",
+            "body": "Symptoms: EAI_AGAIN or DNS timeouts in service logs. Check coredns ready replicas and latency; scale coredns or move it to the system node group. NodeLocal DNSCache is planned but not rolled out."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-03T01:50:00Z",
+        "end": "2026-09-03T02:00:00Z",
+        "service": "order-svc",
+        "limit": 5
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c15-before-1",
+            "start": "2026-09-03T01:52:10Z",
+            "duration_ms": 236.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "order-svc",
+                "operation": "POST /orders",
+                "duration_ms": 236.0,
+                "status": "ok",
+                "attrs": {
+                  "version": "7.3.0"
+                }
+              },
+              {
+                "service": "order-svc",
+                "operation": "http.connect payments-svc",
+                "duration_ms": 0.2,
+                "status": "ok",
+                "attrs": {
+                  "reused_connection": true
+                }
+              },
+              {
+                "service": "payments-svc",
+                "operation": "POST /charges",
+                "duration_ms": 171.0,
+                "status": "ok",
+                "attrs": {}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-03T02:00:00Z",
+        "entity": "coredns"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-03T02:05:40Z",
+            "source": "kubernetes",
+            "entity": "pod/coredns-7c9f8-hx2lq",
+            "reason": "Evicted",
+            "message": "Pod evicted from node ip-10-2-4-11 (node drain)."
+          },
+          {
+            "ts": "2026-09-03T02:05:42Z",
+            "source": "kubernetes",
+            "entity": "pod/coredns-7c9f8-q8vtd",
+            "reason": "Evicted",
+            "message": "Pod evicted from node ip-10-2-4-11 (node drain)."
+          },
+          {
+            "ts": "2026-09-03T02:06:15Z",
+            "source": "kubernetes",
+            "entity": "deployment/coredns",
+            "reason": "FailedScheduling",
+            "message": "Replacement pods coredns-7c9f8-m2kd9, coredns-7c9f8-z7rtw Pending: 0/9 nodes are available: 9 Insufficient cpu."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-03T02:00:00Z",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-03T02:05:31Z",
+            "source": "kubernetes",
+            "entity": "node/ip-10-2-4-11",
+            "reason": "NodeDrain",
+            "message": "Draining node for node group upgrade; evicting 14 pods."
+          },
+          {
+            "ts": "2026-09-03T02:05:40Z",
+            "source": "kubernetes",
+            "entity": "pod/coredns-7c9f8-hx2lq",
+            "reason": "Evicted",
+            "message": "Pod evicted from node ip-10-2-4-11 (node drain)."
+          },
+          {
+            "ts": "2026-09-03T02:05:42Z",
+            "source": "kubernetes",
+            "entity": "pod/coredns-7c9f8-q8vtd",
+            "reason": "Evicted",
+            "message": "Pod evicted from node ip-10-2-4-11 (node drain)."
+          },
+          {
+            "ts": "2026-09-03T02:06:15Z",
+            "source": "kubernetes",
+            "entity": "deployment/coredns",
+            "reason": "FailedScheduling",
+            "message": "Replacement pods coredns-7c9f8-m2kd9, coredns-7c9f8-z7rtw Pending: 0/9 nodes are available: 9 Insufficient cpu."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-03T02:25:00Z",
+        "end": "2026-09-03T03:30:00Z",
+        "service": "coredns",
+        "name": "ready_replicas"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "coredns",
+            "name": "ready_replicas",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-03T02:25:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:30:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:35:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:40:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:45:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:50:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T02:55:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T03:00:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T03:05:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T03:10:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T03:15:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T03:20:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-09-03T03:25:00Z",
+                "value": 1.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "ready_replicas",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-03T01:30:00Z",
+        "end": "2026-09-03T03:30:00Z",
+        "service": "coredns"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": []
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-03T01:30:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "service": "inventory-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-03T02:05:00Z",
+        "end": "2026-09-03T02:30:00Z",
+        "service": "payments-svc",
+        "limit": 5
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c15-ok-after",
+            "start": "2026-09-03T02:16:33Z",
+            "duration_ms": 262.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "order-svc",
+                "operation": "POST /orders",
+                "duration_ms": 262.0,
+                "status": "ok",
+                "attrs": {
+                  "version": "7.3.1"
+                }
+              },
+              {
+                "service": "order-svc",
+                "operation": "dns.lookup payments-svc.prod.svc.cluster.local",
+                "duration_ms": 38.0,
+                "status": "ok",
+                "attrs": {
+                  "resolver": "10.96.0.10"
+                }
+              },
+              {
+                "service": "order-svc",
+                "operation": "http.connect payments-svc",
+                "duration_ms": 3.0,
+                "status": "ok",
+                "attrs": {
+                  "reused_connection": false
+                }
+              },
+              {
+                "service": "payments-svc",
+                "operation": "POST /charges",
+                "duration_ms": 176.0,
+                "status": "ok",
+                "attrs": {}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_external_report",
+      "args": {
+        "name": "vendor status"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1,
+      "data": null
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.009486,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same originating issue as the key: the payments-svc mTLS certificate expired because cert-manager renewals were blocked after the 2026-07-28 cert-manager RBAC tightening removed issuer-read permission.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": []
+  }
+}

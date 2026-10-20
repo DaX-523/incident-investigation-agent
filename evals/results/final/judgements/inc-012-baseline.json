@@ -1,0 +1,17 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.009895,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same primary mechanism as the key: heavy AI/search crawler traffic against the single nginx-edge EC2 origin, compounded by the SPA catch-all returning 200 for arbitrary paths and the lack of CDN/rate limiting, which drives egress billing. It does not shift blame to a different component or a red herring.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2,
+      3
+    ],
+    "unsupported_claims": []
+  }
+}

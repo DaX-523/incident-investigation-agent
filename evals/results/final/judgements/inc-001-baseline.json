@@ -1,0 +1,15 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.015338,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same originating change and mechanism as the key: checkout-svc v2.14.0 changed formatPrice to read cart.currency.code, which is missing on legacy v1 carts and causes the TypeError in src/pricing/format.ts:41.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": []
+  }
+}

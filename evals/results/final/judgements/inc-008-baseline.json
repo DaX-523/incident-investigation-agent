@@ -1,0 +1,18 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.010559,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report\u2019s rank-1 hypothesis is a poison message tied to the checkout-svc v4.1.0 gift-wrap change, which matches the key\u2019s originating checkout-svc schema change and decode-failure mechanism. It remains inconclusive rather than claiming a different primary cause.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2
+    ],
+    "unsupported_claims": [
+      "\"Orders on that partition never reach orders-db or notification-svc\""
+    ]
+  }
+}

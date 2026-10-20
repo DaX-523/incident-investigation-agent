@@ -1,0 +1,16 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.015891,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report\u2019s lead hypothesis matches the key: a checkout-svc v4.1.0 gift-wrap payload/schema change that orders-worker cannot deserialize, causing crash-loops on affected partitions. It stays appropriately inconclusive rather than claiming a definitive root cause.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2
+    ],
+    "unsupported_claims": []
+  }
+}

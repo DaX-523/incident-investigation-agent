@@ -1,0 +1,1320 @@
+{
+  "scenario": "inc-013",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Contacts marked UNREACHABLE without their phones ever ringing",
+    "outcome": "conclusive",
+    "summary": "Confirmed by tool data: the carrier's own CDR summary (E7) reports 71% of INVITE attempts rejected with 429 while peak concurrency was 24 against an 80-channel contract, so this is not a concurrent-channel limit. The carrier's support email (E8) says the trunk exceeded its 15 call-attempts/second rate and that excess INVITEs were rejected with 429 from about 05:00 UTC on 2026-03-10. A trace (E12, E13) shows a 429 from the carrier-trunk span propagating through sip-gateway to the dialer. The change history (E16, E17) shows only the K-2214 campaign start at 2026-03-10T04:00Z, and no infra events (E18) or alerts (E4, E15) were recorded. Not confirmed: the dialer step that turns repeated 429s into an UNREACHABLE disposition is unverified, since only two retry log lines for one contact were found (E3) and no disposition logs were searched. The onset date conflicts: the report and H1 say 2026-03-11, while the carrier CDR, vendor email and dialer logs say 2026-03-10 (E9). Sip-gateway and carrier-trunk metrics, traces for K-2214 contacts and the 'vendor status' report were unavailable, so channel-capacity exhaustion (H2) is refuted only indirectly.",
+    "root_cause": "The K-2214 campaign start at 2026-03-10T04:00Z raised INVITE attempt volume on the carrier trunk above the carrier's enforced limit of 15 call attempts/second (all INVITEs counted, including retries). The carrier rejected the excess INVITEs with SIP 429 from about 05:00Z (E7, E8), and sip-gateway passed those errors back to the dialer (E12, E13). The step that marked contacts UNREACHABLE without a call reaching the phone is not yet confirmed (E3, H3 inconclusive), and the onset date should be re-checked against the 2026-03-11 report date (E9).",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H4",
+        "statement": "The carrier applied a per-call-attempt rate limit of 15 attempts/sec on the trunk, causing excess INVITEs to be rejected with SIP 429 Too Many Requests from about 05:00 UTC on 2026-03-10, which propagated through sip-gateway to the dialer and prevented calls from being placed.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E7",
+          "E8",
+          "E12",
+          "E13"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "carrier_cdr_summary_2026-03-10 (generated 2026-03-11T03:00Z) states: contracted concurrent channels 80; peak concurrent channels 24; INVITE attempts rejected (429): 71%. Peak concurrency was well under the contracted limit, so the rejections are not a concurrent-channel capacity limit.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "carrier_support_reply (vendor email, generated 2026-03-11T04:30Z): the trunk exceeded its call-attempt rate of 15 attempts/second (all INVITEs counted) for most of 10 March from about 05:00 UTC; excess INVITEs were rejected with 429. The vendor asks us to reduce the attempt rate. This is a carrier-side rate limit on attempts, not a carrier outage.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Only trace in window t-inc013-reject-1 (2026-03-10T07:00:00Z, status error): dialer placeCall for contact CT-60311 attempt 2 errored; sip-gateway 'outbound INVITE' errored with sip_status 429; carrier-trunk INVITE errored with '429 Too Many Requests'. This shows the carrier returning 429 rate-limit responses that propagate back through sip-gateway to the dialer.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "The 429 in t-inc013-reject-1 came from the carrier (carrier-trunk span), not a local sip-gateway capacity error; it occurred at 2026-03-10T07:00Z, about 27 hours before the reported 2026-03-11T05:00Z collapse. Also, the trace does not show whether the dialer set UNREACHABLE after this error.",
+            "evidence_ids": [
+              "E13"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The vendor email and CDR summary timestamps correspond to actual campaign call attempts for K-2214",
+          "Campaign-scheduler\u2019s dispatch rate sufficiently exceeded 15 call attempts/sec at the time of the rejections",
+          "The dialer and sip-gateway correctly forwarded SIP 429 responses from the carrier"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H1",
+        "statement": "The carrier-trunk is failing or rejecting outbound calls from about 05:00 UTC on 2026-03-11, so sip-gateway receives carrier errors and the dialer marks contacts UNREACHABLE without ringing the phones.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E7",
+          "E8",
+          "E12",
+          "E13",
+          "E3"
+        ],
+        "contradicting_evidence": [
+          "E9",
+          "E16",
+          "E17",
+          "E18"
+        ],
+        "facts": [
+          {
+            "text": "carrier_cdr_summary_2026-03-10 (generated 2026-03-11T03:00Z) states: contracted concurrent channels 80; peak concurrent channels 24; INVITE attempts rejected (429): 71%. Peak concurrency was well under the contracted limit, so the rejections are not a concurrent-channel capacity limit.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "carrier_support_reply (vendor email, generated 2026-03-11T04:30Z): the trunk exceeded its call-attempt rate of 15 attempts/second (all INVITEs counted) for most of 10 March from about 05:00 UTC; excess INVITEs were rejected with 429. The vendor asks us to reduce the attempt rate. This is a carrier-side rate limit on attempts, not a carrier outage.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Only trace in window t-inc013-reject-1 (2026-03-10T07:00:00Z, status error): dialer placeCall for contact CT-60311 attempt 2 errored; sip-gateway 'outbound INVITE' errored with sip_status 429; carrier-trunk INVITE errored with '429 Too Many Requests'. This shows the carrier returning 429 rate-limit responses that propagate back through sip-gateway to the dialer.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "The 429 in t-inc013-reject-1 came from the carrier (carrier-trunk span), not a local sip-gateway capacity error; it occurred at 2026-03-10T07:00Z, about 27 hours before the reported 2026-03-11T05:00Z collapse. Also, the trace does not show whether the dialer set UNREACHABLE after this error.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "search_logs for service dialer, same window, returned only two WARN entries: 2026-03-10T05:02:11Z 'INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s' and 2026-03-10T05:04:11Z 'INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s'. The dialer retried these 429 rejections rather than recording a final UNREACHABLE disposition. Only one contact is visible, so this is not a population-level count.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Date discrepancy: the incident report and H1 say the drop started about 05:00 UTC on 2026-03-11, but the carrier CDR summary and vendor email both place the 429 onset at about 05:00 UTC on 2026-03-10. The dialer 429 log entries are also dated 2026-03-10T05:02Z. The timing relative to the 2026-03-10T04:00Z campaign start should be re-checked against the report.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "Change history for 2026-03-10T03:30Z to 2026-03-11T05:00Z lists exactly one change: campaign-scheduler 'Campaign K-2214 (21,000 contacts) start' at 2026-03-10T04:00Z, author 'customer'. No deploy, rollback, config, feature-flag, migration, secret, or infra change is listed for sip-gateway or dialer in that window.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "The unfiltered 14-day change sweep (call-0003, from 2026-02-24T03:30Z) also returns only the single K-2214 start at 2026-03-10T04:00Z. No sip-gateway or dialer change appears in the 14 days before the incident either.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "Infra events query for 2026-03-10T03:30Z to 2026-03-11T05:00Z (no entity or source filter) returned zero events. No Kubernetes, cloud, certificate, or clock events were recorded in the window, including around the 05:00Z symptom onset.",
+            "evidence_ids": [
+              "E18"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The incident reporter\u2019s timeline misstates the date by one day",
+          "Persistent carrier rejections ultimately lead the dialer to mark contacts UNREACHABLE",
+          "The sip-gateway forwarded carrier SIP 429 errors without altering them"
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "The dialer maps sip-gateway capacity or transient rejections to a final UNREACHABLE disposition instead of retrying, so contacts are marked unreachable without a call attempt reaching the carrier.",
+        "status": "inconclusive",
+        "confidence": "low",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E3",
+          "E16",
+          "E17"
+        ],
+        "facts": [
+          {
+            "text": "search_logs for service dialer, same window, returned only two WARN entries: 2026-03-10T05:02:11Z 'INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s' and 2026-03-10T05:04:11Z 'INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s'. The dialer retried these 429 rejections rather than recording a final UNREACHABLE disposition. Only one contact is visible, so this is not a population-level count.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Change history for 2026-03-10T03:30Z to 2026-03-11T05:00Z lists exactly one change: campaign-scheduler 'Campaign K-2214 (21,000 contacts) start' at 2026-03-10T04:00Z, author 'customer'. No deploy, rollback, config, feature-flag, migration, secret, or infra change is listed for sip-gateway or dialer in that window.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "The unfiltered 14-day change sweep (call-0003, from 2026-02-24T03:30Z) also returns only the single K-2214 start at 2026-03-10T04:00Z. No sip-gateway or dialer change appears in the 14 days before the incident either.",
+            "evidence_ids": [
+              "E17"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Dialer disposition logs for K-2214 were not checked at scale",
+          "Dialer may implement a retry-then-give-up logic that translates repeated 429s into UNREACHABLE outcomes"
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H2",
+        "statement": "The K-2214 campaign (21,000 contacts, started 2026-03-10T04:00Z) drives concurrent calls above the sip-gateway channel limit, so sip-gateway rejects new INVITEs with a capacity error and the dialer records those contacts as UNREACHABLE.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E12"
+        ],
+        "contradicting_evidence": [
+          "E7",
+          "E8",
+          "E12",
+          "E13"
+        ],
+        "facts": [
+          {
+            "text": "Only trace in window t-inc013-reject-1 (2026-03-10T07:00:00Z, status error): dialer placeCall for contact CT-60311 attempt 2 errored; sip-gateway 'outbound INVITE' errored with sip_status 429; carrier-trunk INVITE errored with '429 Too Many Requests'. This shows the carrier returning 429 rate-limit responses that propagate back through sip-gateway to the dialer.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "carrier_cdr_summary_2026-03-10 (generated 2026-03-11T03:00Z) states: contracted concurrent channels 80; peak concurrent channels 24; INVITE attempts rejected (429): 71%. Peak concurrency was well under the contracted limit, so the rejections are not a concurrent-channel capacity limit.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "carrier_support_reply (vendor email, generated 2026-03-11T04:30Z): the trunk exceeded its call-attempt rate of 15 attempts/second (all INVITEs counted) for most of 10 March from about 05:00 UTC; excess INVITEs were rejected with 429. The vendor asks us to reduce the attempt rate. This is a carrier-side rate limit on attempts, not a carrier outage.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Only trace in window t-inc013-reject-1 (2026-03-10T07:00:00Z, status error): dialer placeCall for contact CT-60311 attempt 2 errored; sip-gateway 'outbound INVITE' errored with sip_status 429; carrier-trunk INVITE errored with '429 Too Many Requests'. This shows the carrier returning 429 rate-limit responses that propagate back through sip-gateway to the dialer.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "The 429 in t-inc013-reject-1 came from the carrier (carrier-trunk span), not a local sip-gateway capacity error; it occurred at 2026-03-10T07:00Z, about 27 hours before the reported 2026-03-11T05:00Z collapse. Also, the trace does not show whether the dialer set UNREACHABLE after this error.",
+            "evidence_ids": [
+              "E13"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Carrier CDR summary and vendor email accurately report concurrency and rate-limit behavior"
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Throttle the campaign dispatch rate, including retries, to a verified margin below 15 INVITEs/second on the carrier trunk, or pause K-2214 until that is confirmed. Do not change carrier or gateway limits to get around the 429s.",
+        "rationale": "The carrier's enforced rate limit is the confirmed cause of the rejections, and the campaign scheduler dispatches at 12 calls/sec (E10). Retries may push total attempts over 15/sec; that is an assumption to verify against CDR attempt-rate data.",
+        "evidence_ids": [
+          "E8",
+          "E10",
+          "E7",
+          "E12"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Identify contacts from K-2214 marked UNREACHABLE after 429 rejections and re-queue them for call attempts once the rate is under the limit. Do not reclassify them without checking their disposition history.",
+        "rationale": "Contacts were marked UNREACHABLE without their phones ringing, so their status is wrong. The affected population is not yet counted (no disposition logs were pulled).",
+        "evidence_ids": [
+          "E3",
+          "E7",
+          "E8"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Change the dialer so that 429 and other carrier rate-limit responses are retried with backoff and do not set a final UNREACHABLE disposition until retries are exhausted and the reason is recorded.",
+        "rationale": "The dialer retried one contact correctly (E3), but whether repeated 429s end in UNREACHABLE is unverified. This change is only justified if the disposition logs confirm the mapping.",
+        "evidence_ids": [
+          "E3",
+          "E21"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Add an enforced rate limiter ahead of the carrier trunk, set below the carrier's 15 attempts/second limit with margin, and have campaign-scheduler respect it.",
+        "rationale": "Nothing in the topology or change history enforces the carrier's attempt rate (E10, E16), so a campaign can exceed it silently.",
+        "evidence_ids": [
+          "E8",
+          "E10",
+          "E16"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Alert on carrier 429 rate, the UNREACHABLE disposition rate per campaign, and connect rate drops, and make sure sip-gateway, carrier-trunk and dialer metrics are actually collected.",
+        "rationale": "No alert fired for the 429 pattern or the connect-rate collapse, and every metrics query returned empty (E4, E15, E1, E14).",
+        "evidence_ids": [
+          "E4",
+          "E15",
+          "E1",
+          "E14",
+          "E6"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Fix trace sampling for campaign traffic and verify that the change and infra event sources cover the full window.",
+        "rationale": "Only one trace exists in the window (E11), and the change query returned a single point (E19), so the absence of other evidence is weak.",
+        "evidence_ids": [
+          "E11",
+          "E19",
+          "E18"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Dialer disposition logs for K-2214 showing how many contacts were set to UNREACHABLE, and whether the reason was 429 or another code",
+      "Carrier CDR per-second or per-minute INVITE attempt rate from 2026-03-10 04:00Z onward, to confirm the 15/sec exceedance and the onset time",
+      "Written confirmation from the carrier of the exact limit definition (whether retries count) and whether the limit is still in force",
+      "Sip-gateway SIP response-code counts and channel utilization for the window, to test H2 directly",
+      "Confirmation of the actual onset date (2026-03-10 vs 2026-03-11) against the reporter's timeline",
+      "Dialer logic for mapping repeated 429s to a final disposition, from code or configuration",
+      "Traces for K-2214 contacts around 05:00Z, to establish the full dialer-to-carrier path",
+      "Current status from the carrier's status page, since the 'vendor status' report was not found"
+    ],
+    "gaps": [
+      "get_external_report {'name': 'vendor status'} failed: not_found: no report named 'vendor status'; available: ['carrier_cdr_summary_2026-03-10', 'carrier_support_reply']",
+      "sip-gateway channel utilization and SIP response-code counts could not be retrieved: metrics and logs returned empty (call-0011, call-0012), so H2's capacity-rejection claim is only tested indirectly via the carrier CDR and vendor email.",
+      "Dialer disposition logs for UNREACHABLE and campaign K-2214 were not searched; only two 429 retry lines were seen (call-0013), so H3 (dialer marking contacts UNREACHABLE on capacity or transient rejections) is not confirmed or refuted at population scale.",
+      "carrier-trunk metrics are empty (call-0016), so no direct carrier-side outage signal was checked against the metrics.",
+      "Tool-call budget was exhausted before the planned search for UNREACHABLE/429/503/486/K-2214 across all services and the query_metrics breadth sweep for all services could be completed.",
+      "No vendor status page was available ('vendor status' not found, call-0015); carrier status was inferred only from the CDR summary and vendor email.",
+      "No dialer metrics were queried, so the dialer's UNREACHABLE disposition rate and its mapping of gateway/carrier errors are unverified (H3 untested).",
+      "No traces for K-2214 contacts around 2026-03-11T05:00Z; the sampled dialer-to-sip-gateway-to-carrier path for the reported failures could not be established.",
+      "No sip-gateway or carrier-trunk metrics available, so the channel-usage vs. 80-channel limit (H2) and carrier error rates after 05:00Z (H1) cannot be checked.",
+      "Tool allowance (8 calls) exhausted before checking the 2026-03-11T05:00Z onset via campaign-scheduler or dialer metrics, or the K-2214 disposition records.",
+      "Carrier-side status for H1 was not checked: the 'vendor status' report lookup failed (call-0021, not_found). Available reports are 'carrier_cdr_summary_2026-03-10' and 'carrier_support_reply', and neither was queried.",
+      "No sip-gateway channel-limit configuration or concurrent-call metrics were checked, so H2's capacity claim is untested.",
+      "No dialer disposition logs or sip-gateway INVITE response logs were checked. My toolset has no log search, so H3 and the carrier-rejection question remain open.",
+      "The change query's coverage after 2026-03-10T04:00Z is unverified (see data-quality item), so 'no change at 05:00Z' rests on a source that returned a single point."
+    ],
+    "security_findings": [
+      "No manipulation attempts or injected instructions were found in tool outputs (E22). Searches returned empty lists.",
+      "The vendor email (E8) asks for a lower attempt rate. This is a legitimate operational request and is not a request to weaken a security control. Any change to rate limits should still be reviewed before it is applied."
+    ],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "query_metrics for sip-gateway, 2026-03-10T03:30Z to 2026-03-11T06:00Z, returned no series and an empty available_series list. No channel-utilization or rejection-count data is available from our side for this window, so this source cannot confirm or rule out channel saturation. Treat as a broken or missing source, not as proof of no load.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "search_logs for service sip-gateway, same window, no level filter, returned zero entries. No startup, configuration, SIP response-code or rejection lines were recorded for sip-gateway in the window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "search_logs for service dialer, same window, returned only two WARN entries: 2026-03-10T05:02:11Z 'INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s' and 2026-03-10T05:04:11Z 'INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s'. The dialer retried these 429 rejections rather than recording a final UNREACHABLE disposition. Only one contact is visible, so this is not a population-level count.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "get_alerts for the window 2026-03-10T03:30Z to 2026-03-11T06:00Z returned no alerts (fired or resolved), so no alert fired for the period. This is consistent with alerting not covering the 429 pattern, but does not show absence of failure.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "get_external_report name 'vendor status' does not exist (not_found). Available reports are carrier_cdr_summary_2026-03-10 and carrier_support_reply. No vendor status page was read.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "query_metrics for carrier-trunk, same window, returned no series and an empty available_series list. Carrier-side metrics are unavailable from our tooling.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "carrier_cdr_summary_2026-03-10 (generated 2026-03-11T03:00Z) states: contracted concurrent channels 80; peak concurrent channels 24; INVITE attempts rejected (429): 71%. Peak concurrency was well under the contracted limit, so the rejections are not a concurrent-channel capacity limit.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "carrier_support_reply (vendor email, generated 2026-03-11T04:30Z): the trunk exceeded its call-attempt rate of 15 attempts/second (all INVITEs counted) for most of 10 March from about 05:00 UTC; excess INVITEs were rejected with 429. The vendor asks us to reduce the attempt rate. This is a carrier-side rate limit on attempts, not a carrier outage.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Date discrepancy: the incident report and H1 say the drop started about 05:00 UTC on 2026-03-11, but the carrier CDR summary and vendor email both place the 429 onset at about 05:00 UTC on 2026-03-10. The dialer 429 log entries are also dated 2026-03-10T05:02Z. The timing relative to the 2026-03-10T04:00Z campaign start should be re-checked against the report.",
+        "tools": [
+          "get_external_report",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0013",
+          "call-0024",
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Topology: campaign-scheduler dispatches due call attempts every 10s at 12 calls/sec and depends on dialer and campaign-db; dialer depends on sip-gateway and campaign-db; sip-gateway depends on carrier-trunk. carrier-trunk contract is 80 concurrent channels and 15 call attempts/sec.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "A dialer trace query over 2026-03-10T23:00Z to 2026-03-11T06:00Z returned zero traces; the window-wide query 2026-03-10T03:30Z to 2026-03-11T06:00Z returned only one trace in total (t-inc013-reject-1), so trace coverage for K-2214 contacts is effectively absent and sampled INVITE paths could not be established for the reported 05:00Z collapse.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "Only trace in window t-inc013-reject-1 (2026-03-10T07:00:00Z, status error): dialer placeCall for contact CT-60311 attempt 2 errored; sip-gateway 'outbound INVITE' errored with sip_status 429; carrier-trunk INVITE errored with '429 Too Many Requests'. This shows the carrier returning 429 rate-limit responses that propagate back through sip-gateway to the dialer.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0017",
+          "call-0026"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "The 429 in t-inc013-reject-1 came from the carrier (carrier-trunk span), not a local sip-gateway capacity error; it occurred at 2026-03-10T07:00Z, about 27 hours before the reported 2026-03-11T05:00Z collapse. Also, the trace does not show whether the dialer set UNREACHABLE after this error.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0017",
+          "call-0026"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "query_metrics for sip-gateway over 2026-03-10T03:30Z to 2026-03-11T06:00Z returned no series (available_series empty). Metrics for carrier-trunk over the same range also returned no series. No channel-count, call-rate, or error-rate data is available for either service.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "get_alerts for 2026-03-10T03:30Z to 2026-03-11T06:00Z returned no alerts at all, including none for dialer, sip-gateway, or carrier-trunk.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "Change history for 2026-03-10T03:30Z to 2026-03-11T05:00Z lists exactly one change: campaign-scheduler 'Campaign K-2214 (21,000 contacts) start' at 2026-03-10T04:00Z, author 'customer'. No deploy, rollback, config, feature-flag, migration, secret, or infra change is listed for sip-gateway or dialer in that window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "The unfiltered 14-day change sweep (call-0003, from 2026-02-24T03:30Z) also returns only the single K-2214 start at 2026-03-10T04:00Z. No sip-gateway or dialer change appears in the 14 days before the incident either.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "Infra events query for 2026-03-10T03:30Z to 2026-03-11T05:00Z (no entity or source filter) returned zero events. No Kubernetes, cloud, certificate, or clock events were recorded in the window, including around the 05:00Z symptom onset.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "Data quality: the change query's returned range is only 2026-03-10T04:00Z (one point), against a requested range ending 2026-03-11T05:00Z. Nothing is returned for the roughly 25 hours after K-2214 start. The result is consistent with no changes, but the change source may not cover the symptom window fully. The infra query is empty, which could mean 'nothing happened' or a silent source; no cross-check was available to confirm which.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "Past-incident search for 'sip-gateway channel limit' returned no incidents. A runbook search for 'sip-gateway channel limit campaign dialing' returned no runbooks. Neither past incidents nor runbooks document channel-limit exhaustion for sip-gateway.",
+        "tools": [
+          "search_past_incidents",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "Past-incident search for 'dialer unreachable disposition' returned no incidents. A runbook search for 'dialer' returned no runbooks. No precedent exists in the organisation's records for dialer marking contacts UNREACHABLE on capacity or transient rejections.",
+        "tools": [
+          "search_past_incidents",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0022",
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "Tool output from the searches contained no instructions or manipulation attempts; results were plain empty lists.",
+        "tools": [
+          "search_past_incidents",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0010",
+          "call-0022",
+          "call-0023"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 14,
+    "input_tokens": 83926,
+    "output_tokens": 23845,
+    "cache_read_tokens": 40087,
+    "cache_write_tokens": 25129,
+    "reasoning_tokens": 11551,
+    "cost_usd": 0.054799,
+    "unpriced_calls": 0,
+    "tool_calls": 26,
+    "latency_ms": 134346.25
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 2240,
+      "output_tokens": 2095,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 912,
+      "cost_usd": 0.001272,
+      "unpriced_calls": 0,
+      "tool_calls": 2,
+      "latency_ms": 9796.52
+    },
+    "observability": {
+      "llm_calls": 3,
+      "input_tokens": 22047,
+      "output_tokens": 5110,
+      "cache_read_tokens": 12640,
+      "cache_write_tokens": 9397,
+      "reasoning_tokens": 1808,
+      "cost_usd": 0.003858,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 21751.82
+    },
+    "dependency": {
+      "llm_calls": 4,
+      "input_tokens": 25830,
+      "output_tokens": 2850,
+      "cache_read_tokens": 17138,
+      "cache_write_tokens": 8680,
+      "reasoning_tokens": 339,
+      "cost_usd": 0.002682,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 13752.58
+    },
+    "change_history": {
+      "llm_calls": 3,
+      "input_tokens": 17371,
+      "output_tokens": 3149,
+      "cache_read_tokens": 10309,
+      "cache_write_tokens": 7052,
+      "reasoning_tokens": 994,
+      "cost_usd": 0.00256,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 14322.41
+    },
+    "reasoning": {
+      "llm_calls": 1,
+      "input_tokens": 4444,
+      "output_tokens": 6602,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 5760,
+      "cost_usd": 0.033937,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 52698.27
+    },
+    "critic": {
+      "llm_calls": 1,
+      "input_tokens": 4959,
+      "output_tokens": 593,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 448,
+      "cost_usd": 0.008064,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 4661.91
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 7035,
+      "output_tokens": 3446,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1290,
+      "cost_usd": 0.002426,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 17362.74
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 12,
+      "input_tokens": 74523,
+      "output_tokens": 16650,
+      "cache_read_tokens": 40087,
+      "cache_write_tokens": 25129,
+      "reasoning_tokens": 5343,
+      "cost_usd": 0.012798,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 76986.07
+    },
+    "o4-mini-2025-04-16": {
+      "llm_calls": 2,
+      "input_tokens": 9403,
+      "output_tokens": 7195,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 6208,
+      "cost_usd": 0.042001,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 57360.18
+    }
+  },
+  "tool_calls": 26,
+  "latency_s": 106.3,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "campaign-scheduler",
+            "kind": "scheduler",
+            "depends_on": [
+              "dialer",
+              "campaign-db"
+            ],
+            "notes": "Dispatches due call attempts every 10s at a configured rate of 12 calls/sec"
+          },
+          {
+            "name": "dialer",
+            "kind": "worker",
+            "depends_on": [
+              "sip-gateway",
+              "campaign-db"
+            ],
+            "notes": "Places outbound calls"
+          },
+          {
+            "name": "sip-gateway",
+            "kind": "sip_gateway",
+            "depends_on": [
+              "carrier-trunk"
+            ],
+            "notes": null
+          },
+          {
+            "name": "carrier-trunk",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "Telecom carrier SIP trunk. Contract: 80 concurrent channels, 15 call attempts/sec"
+          },
+          {
+            "name": "campaign-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-02-25T05:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-03-10T04:00:00Z",
+            "kind": "scheduled_job",
+            "service": "campaign-scheduler",
+            "summary": "Campaign K-2214 (21,000 contacts) start",
+            "author": "customer",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-02-24T03:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-03-10T04:00:00Z",
+            "kind": "scheduled_job",
+            "service": "campaign-scheduler",
+            "summary": "Campaign K-2214 (21,000 contacts) start",
+            "author": "customer",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "get_topology",
+      "args": {
+        "service": "dialer"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "campaign-scheduler",
+            "kind": "scheduler",
+            "depends_on": [
+              "dialer",
+              "campaign-db"
+            ],
+            "notes": "Dispatches due call attempts every 10s at a configured rate of 12 calls/sec"
+          },
+          {
+            "name": "dialer",
+            "kind": "worker",
+            "depends_on": [
+              "sip-gateway",
+              "campaign-db"
+            ],
+            "notes": "Places outbound calls"
+          },
+          {
+            "name": "sip-gateway",
+            "kind": "sip_gateway",
+            "depends_on": [
+              "carrier-trunk"
+            ],
+            "notes": null
+          },
+          {
+            "name": "carrier-trunk",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "Telecom carrier SIP trunk. Contract: 80 concurrent channels, 15 call attempts/sec"
+          },
+          {
+            "name": "campaign-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [
+          "campaign-scheduler"
+        ],
+        "downstream": [
+          "campaign-db",
+          "carrier-trunk",
+          "sip-gateway"
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-03-10T23:00:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "dialer",
+        "limit": 40
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "sip-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T05:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-03-10T04:00:00Z",
+            "kind": "scheduled_job",
+            "service": "campaign-scheduler",
+            "summary": "Campaign K-2214 (21,000 contacts) start",
+            "author": "customer",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T05:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "sip-gateway channel limit"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "sip-gateway channel limit campaign dialing"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "sip-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "sip-gateway",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "dialer",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-03-10T05:02:11Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:04:11Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": []
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_external_report",
+      "args": {
+        "name": "vendor status"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1,
+      "data": null
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "carrier-trunk"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-inc013-reject-1",
+            "start": "2026-03-10T07:00:00Z",
+            "duration_ms": 120.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "dialer",
+                "operation": "placeCall",
+                "duration_ms": 120.0,
+                "status": "error",
+                "attrs": {
+                  "contact": "CT-60311",
+                  "attempt": 2
+                }
+              },
+              {
+                "service": "sip-gateway",
+                "operation": "outbound INVITE",
+                "duration_ms": 110.0,
+                "status": "error",
+                "attrs": {
+                  "sip_status": 429
+                }
+              },
+              {
+                "service": "carrier-trunk",
+                "operation": "INVITE",
+                "duration_ms": 95.0,
+                "status": "error",
+                "attrs": {
+                  "sip_status": "429 Too Many Requests"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_topology",
+      "args": {
+        "service": "carrier-trunk"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "campaign-scheduler",
+            "kind": "scheduler",
+            "depends_on": [
+              "dialer",
+              "campaign-db"
+            ],
+            "notes": "Dispatches due call attempts every 10s at a configured rate of 12 calls/sec"
+          },
+          {
+            "name": "dialer",
+            "kind": "worker",
+            "depends_on": [
+              "sip-gateway",
+              "campaign-db"
+            ],
+            "notes": "Places outbound calls"
+          },
+          {
+            "name": "sip-gateway",
+            "kind": "sip_gateway",
+            "depends_on": [
+              "carrier-trunk"
+            ],
+            "notes": null
+          },
+          {
+            "name": "carrier-trunk",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "Telecom carrier SIP trunk. Contract: 80 concurrent channels, 15 call attempts/sec"
+          }
+        ],
+        "upstream": [
+          "campaign-scheduler",
+          "dialer",
+          "sip-gateway"
+        ],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "carrier-trunk"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": []
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "get_external_report",
+      "args": {
+        "name": "vendor status"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1,
+      "data": null
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "dialer unreachable disposition"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "dialer"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_external_report",
+      "args": {
+        "name": "carrier_cdr_summary_2026-03-10"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "carrier_cdr_summary_2026-03-10",
+            "kind": "carrier_cdr",
+            "generated_at": "2026-03-11T03:00:00Z",
+            "body": "Trunk summary 2026-03-10 (UTC):\ncontracted concurrent channels: 80\npeak concurrent channels: 24\nINVITE attempts rejected (429): 71%\n"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "get_external_report",
+      "args": {
+        "name": "carrier_support_reply"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "carrier_support_reply",
+            "kind": "vendor_email",
+            "generated_at": "2026-03-11T04:30:00Z",
+            "body": "Your trunk exceeded its call-attempt rate (15 attempts/second, all INVITEs counted) for most of 10 March from ~05:00 UTC; excess INVITEs were rejected with 429. Please reduce your attempt rate."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "status": "error",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-inc013-reject-1",
+            "start": "2026-03-10T07:00:00Z",
+            "duration_ms": 120.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "dialer",
+                "operation": "placeCall",
+                "duration_ms": 120.0,
+                "status": "error",
+                "attrs": {
+                  "contact": "CT-60311",
+                  "attempt": 2
+                }
+              },
+              {
+                "service": "sip-gateway",
+                "operation": "outbound INVITE",
+                "duration_ms": 110.0,
+                "status": "error",
+                "attrs": {
+                  "sip_status": 429
+                }
+              },
+              {
+                "service": "carrier-trunk",
+                "operation": "INVITE",
+                "duration_ms": 95.0,
+                "status": "error",
+                "attrs": {
+                  "sip_status": "429 Too Many Requests"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.013088,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report pins the outage on migration 0047_users_bio_to_text rewriting the users table during ALTER COLUMN TYPE, which blocked reads and writes until lock timeouts cleared. That matches the key\u2019s originating change and mechanism.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": [
+      "\"user-svc logs appear sampled\""
+    ]
+  }
+}

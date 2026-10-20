@@ -1,0 +1,17 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "cost_usd": 0.003111,
+  "verdict": {
+    "root_cause": "partial",
+    "root_cause_reason": "The report identifies the correct originating job, backfill-carrier-events, and the same saturation mechanism on tracking-db, but it makes the 08:55 tracking-api pool reduction part of the primary cause rather than a contributing factor. That means it finds the right cause only in combination with an additional different primary cause.",
+    "red_herrings_adopted": [
+      1
+    ],
+    "must_not_violated": [
+      1
+    ],
+    "factors_stated": [
+      1
+    ]
+  }
+}

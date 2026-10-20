@@ -1,0 +1,812 @@
+{
+  "scenario": "inc-008",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "openai",
+  "report": {
+    "incident_title": "Orders stuck in \"Processing\", confirmation emails not sent",
+    "outcome": "inconclusive",
+    "summary": "At 13:17 UTC orders-worker pod 7 crashed and entered a BackOff/restart loop; pod 2 followed at 13:52 UTC.  Each orders-worker pod is statically assigned to one Kafka partition, therefore the events in the affected partitions (\u2248 2\u204412 of new orders) were no longer consumed: orders remained in \u201cProcessing\u201d and confirmation emails were never sent.  Other partitions/pods were healthy so most orders completed normally, matching the partial-impact reports.  The pod crashes happened before any Kafka cluster alert; the brief Kafka under-replication at 13:31 UTC is a secondary effect, not the cause.\n\nApplication logs were unavailable because the logging cluster was in maintenance, but Kubernetes events and restart counters firmly show the workers were repeatedly crashing, making this the most likely root cause.",
+    "root_cause": null,
+    "confidence": "low",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "Orders stuck because orders-worker pod 7 (and later pod 2) crashed repeatedly, so their Kafka partitions were not consumed.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "orders-worker-7 restarts jump from 0 to 3 at 13:20 and keep increasing afterwards",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Kubernetes BackOff event for pod/orders-worker-7 at 13:17:52 (\u201cBack-off restarting failed container orders-worker (exit code 1)\u201d)",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "orders-worker-2 restarts start at 13:55 and rise to 10 by 14:25",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "orders-worker is a StatefulSet of 12 pods, each permanently assigned one Kafka partition",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "Partial customer impact (only some orders) aligns with 2/12 partitions being down",
+            "evidence_ids": [
+              "E5"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Crash was due to an application defect or bad input; exact exception unknown because log search unavailable."
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "Kafka under-replicated partitions on broker 2 caused consumer lag, leading to stuck orders.",
+        "status": "refuted",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E6"
+        ],
+        "contradicting_evidence": [
+          "E7",
+          "E8"
+        ],
+        "facts": [
+          {
+            "text": "KafkaUnderReplicatedPartitions alert fired at 13:31 with 14 URPs",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "orders-worker-7 had already crashed at 13:17 \u2013 before the Kafka alert",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "URP alert resolved by 13:38, but orders-worker pods continued to crash and orders remained stuck",
+            "evidence_ids": [
+              "E8"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "Notification-svc outage prevented confirmation emails and blocked order completion workflow.",
+        "status": "inconclusive",
+        "confidence": "low",
+        "supporting_evidence": [],
+        "contradicting_evidence": [],
+        "facts": [],
+        "assumptions": [
+          "Could not access logs/metrics for notification-svc due to logging cluster timeout."
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "fix",
+        "action": "Investigate and patch the orders-worker code path that crashes on specific orders; add unit tests for reproduced payload.",
+        "rationale": "Eliminates the source of the crash loop that halted processing.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E3",
+          "E5",
+          "E7",
+          "E8"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "prevent",
+        "action": "Switch orders-worker to dynamic consumer-group rebalancing so that if one pod dies its partitions are reassigned automatically.",
+        "rationale": "Limits blast radius from one crashing pod to a brief pause instead of prolonged outage.",
+        "evidence_ids": [
+          "E4"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "detect",
+        "action": "Add alert on orders-worker container restarts > 2 in 5 min and on per-partition consumer lag.",
+        "rationale": "Early detection of crashing workers or stalled partitions.",
+        "evidence_ids": [
+          "E1",
+          "E3",
+          "E5",
+          "E7",
+          "E8"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "mitigate",
+        "action": "Add retry / fallback so order status isn\u2019t blocked solely on email sending.",
+        "rationale": "Even if email fails, orders can still be marked complete to reduce customer impact.",
+        "evidence_ids": []
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Ensure logging-es maintenance provides read replicas or a bypass so on-call can access recent logs during incidents.",
+        "rationale": "Log unavailability hindered root-cause analysis.",
+        "evidence_ids": []
+      }
+    ],
+    "missing_data": [
+      "Orders-worker crash stack traces (logs) to pinpoint exact bug.",
+      "Consumer lag metrics to correlate partitions with backlog.",
+      "Any recent code/deploy change history before 12:00 UTC."
+    ],
+    "gaps": [
+      "search_logs {'start': '2026-08-21T13:15:00Z', 'end': '2026-08-21T13:35:00Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 200} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:00:00Z', 'end': '2026-08-21T14:30:00Z', 'service': 'notification-svc', 'level': 'ERROR', 'limit': 200} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:18:00Z', 'end': '2026-08-21T13:19:00Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 50} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:17:40Z', 'end': '2026-08-21T13:17:53Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:00:00Z', 'end': '2026-08-21T14:30:00Z', 'query': 'OrderPlaced', 'service': 'checkout-svc', 'level': 'ERROR', 'limit': 50} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:17:46Z', 'end': '2026-08-21T13:17:51Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 10} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:17:51Z', 'end': '2026-08-21T13:17:52Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 5} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Was there a deploy or config change to orders-worker earlier on Aug 21 before 13:00 UTC?",
+      "Can we recover the crash stack trace from pod logs directly (kubectl logs) despite ES outage?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "orders-worker-7 restarts jump from 0 to 3 at 13:20 and keep increasing afterwards",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "Kubernetes BackOff event for pod/orders-worker-7 at 13:17:52 (\u201cBack-off restarting failed container orders-worker (exit code 1)\u201d)",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "orders-worker-2 restarts start at 13:55 and rise to 10 by 14:25",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0035"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "orders-worker is a StatefulSet of 12 pods, each permanently assigned one Kafka partition",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0001"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Partial customer impact (only some orders) aligns with 2/12 partitions being down",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0013",
+          "call-0035"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "KafkaUnderReplicatedPartitions alert fired at 13:31 with 14 URPs",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0033"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "orders-worker-7 had already crashed at 13:17 \u2013 before the Kafka alert",
+        "tools": [
+          "get_infra_events",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "URP alert resolved by 13:38, but orders-worker pods continued to crash and orders remained stuck",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0035"
+        ]
+      }
+    ],
+    "stop_reason": "max_tokens"
+  },
+  "stop_reason": "max_tokens",
+  "usage": {
+    "llm_calls": 39,
+    "input_tokens": 416019,
+    "output_tokens": 17818,
+    "cache_read_tokens": 396416,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 14400,
+    "cost_usd": 0.379958,
+    "unpriced_calls": 0,
+    "tool_calls": 38,
+    "latency_ms": 277290.37
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 39,
+      "input_tokens": 416019,
+      "output_tokens": 17818,
+      "cache_read_tokens": 396416,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 14400,
+      "cost_usd": 0.379958,
+      "unpriced_calls": 0,
+      "tool_calls": 38,
+      "latency_ms": 277290.37
+    }
+  },
+  "by_model": {
+    "o3-2025-04-16": {
+      "llm_calls": 39,
+      "input_tokens": 416019,
+      "output_tokens": 17818,
+      "cache_read_tokens": 396416,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 14400,
+      "cost_usd": 0.379958,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 277290.37
+    }
+  },
+  "tool_calls": 38,
+  "latency_s": 280.762,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "query_metrics",
+      "args": {
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:15:00Z",
+        "end": "2026-08-21T13:35:00Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 200
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker",
+        "name": "kafka_consumer_lag",
+        "labels": {
+          "partition": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "notification-svc",
+        "level": "ERROR",
+        "limit": 200
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker",
+        "labels": {}
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "orders-worker-7"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:18:00Z",
+        "end": "2026-08-21T13:19:00Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 50
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:15:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "orders-worker",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "kafka",
+        "name": "isr_count"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:10:00Z",
+        "end": "2026-08-21T13:30:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T00:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:45:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "orders-worker-2"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T13:25:00Z",
+        "service": "orders-worker",
+        "name": "memory_rss_bytes",
+        "labels": {
+          "pod": "orders-worker-7"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T13:25:00Z",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T12:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "kind": "feature_flag"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "pod/orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "kafka-broker-2"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:17:40Z",
+        "end": "2026-08-21T13:17:53Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker",
+        "name": "orders_processed_total"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "kafka/broker-2",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T13:20:00Z",
+        "entity": "orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T12:40:00Z",
+        "end": "2026-08-21T13:18:00Z",
+        "service": "orders-worker",
+        "name": "memory_usage_bytes",
+        "labels": {
+          "pod": "orders-worker-7"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "query": "OrderPlaced",
+        "service": "checkout-svc",
+        "level": "ERROR",
+        "limit": 50
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:17:46Z",
+        "end": "2026-08-21T13:17:51Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 10
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T12:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker",
+        "kind": "config"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0031",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "notification-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0032",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "entity": "pod/orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0033",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "kafka",
+        "name": "under_replicated_partitions"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0034",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:17:51Z",
+        "end": "2026-08-21T13:17:52Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 5
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0035",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker",
+        "name": "container_restarts_total"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0036",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:15:00Z",
+        "end": "2026-08-21T13:20:00Z",
+        "entity": "pod/orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0037",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "service": "orders-worker",
+        "name": "container_restarts_total",
+        "labels": {
+          "pod": "orders-worker-5"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0038",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    }
+  ]
+}

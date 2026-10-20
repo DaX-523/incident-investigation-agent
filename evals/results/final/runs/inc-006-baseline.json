@@ -1,0 +1,1170 @@
+{
+  "scenario": "inc-006",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Payments retry storm knocked over fraud-svc?",
+    "outcome": "conclusive",
+    "summary": "The reporter's hypothesis (payments retries overloaded fraud-svc and caused the crash) is not supported as the root cause. The evidence points to fraud-svc being OOM-killed at 10:02:08, about 1 second before payments-svc logged its first fraud-check failure. The likely trigger is the scheduled fraud-gbm v6 to v7 model hot-reload at 09:30, which roughly doubled the model footprint (0.8GB to 1.9GB serialized) against a 2048Mi container limit. Container memory climbed steadily from about 1.16GB at 09:30 to about 2.01GB at 10:00 while request rate stayed flat near 310 rps. Retries are real and visible, but they appear only after the restart (the 1.7x inbound surge is logged at 10:05:30), so they amplified the outage rather than starting it. Retries are already capped at 3 attempts per the logs. Retry limits alone would not have prevented this OOM; the memory budget for the v7 model is the primary fix.",
+    "root_cause": "fraud-svc was OOM-killed (exit 137, container limit 2048Mi) during/after the scheduled fraud-gbm v6->v7 model hot-reload at 09:30. The v7 model (1.9GB serialized, 340 added features) pushed the working set from about 1.16GB toward the 2GiB limit; the pod was killed at 10:02:08. payments-svc connection resets began at 10:02:09. Client retries and the post-restart traffic surge then amplified the impact. The mechanism (v7 in-memory footprint causing the growth) is inferred from timing and has not been confirmed with a heap profile.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "The v7 model hot-reload at 09:30 pushed fraud-svc memory past its 2048Mi limit, causing an OOM kill at 10:02:08. Payments errors followed, and retries amplified the impact after restart.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "Scheduled job at 09:30 'Model hot-reload: fraud-gbm v6 -> v7', with v7 at 1.9GB vs v6 at 0.8GB.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Log at 09:33:01: 'scheduled reload: loading model fraud-gbm v7 (1.9GB on disk)'.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "container_memory_working_set stepped from 1160 MiB (09:25) to 1600 MiB (09:30), then rose steadily to 2010 MiB (10:00).",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Kubernetes event at 10:02:08: pod/fraud-svc-6f7-abc OOMKilled, 'exceeded memory limit (2048Mi)'.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "Container memory limit is 2048Mi, on node ip-10-0-1-44; the service is single-deployment.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "GC overhead warning at 10:04:49: heap 1.98GiB / limit 2.0GiB.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "requests_per_sec was flat at about 305-312 from 09:20 to 10:00.",
+            "evidence_ids": [
+              "E7"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The memory growth after 09:30 is caused by loading v7 (not a leak or traffic change; request rate was flat)",
+          "Serialized size of 1.9GB implies an in-memory footprint near or above the 2GiB limit (not directly measured)"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "Reporter's hypothesis: payments-svc retries overloaded fraud-svc and caused the crash.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E8"
+        ],
+        "contradicting_evidence": [
+          "E9",
+          "E10",
+          "E11"
+        ],
+        "facts": [
+          {
+            "text": "payments-svc logged fraud-check failures and a retry (attempt 2/3) starting at 10:02:09-10:02:10.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "The OOM kill (10:02:08) precedes the first payments error (10:02:09) and the retry (10:02:10); the kill is the earlier event.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "Inbound request rate was flat (about 310 rps) before the restart; the 1.7x surge is logged only at 10:05:30, after the crash.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Reporter's timing is off: the crash was at 10:02:08 (OOMKilled), not 10:05. The 10:05 timestamp is the app's startup log.",
+            "evidence_ids": [
+              "E11"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "Retry amplification after restart is prolonging or re-triggering the outage (secondary contributor).",
+        "status": "inconclusive",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E12",
+          "E13"
+        ],
+        "contradicting_evidence": [
+          "E14"
+        ],
+        "facts": [
+          {
+            "text": "fraud-svc log at 10:05:30: 'inbound request rate 1.7x baseline (client retries)'.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "fraud_check_errors reached 412/min in the 10:05 bucket, then 0 by 10:10.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Retries are capped at 3 attempts, and the payments-svc log shows fraud check recovered at 10:02:45, so the storm was not sustained.",
+            "evidence_ids": [
+              "E14"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Retries from payments-svc account for the 1.7x surge seen at 10:05 (log attributes it to 'client retries', not measured per client)"
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "Infrastructure or node-level fault on ip-10-0-1-44 (not memory-driven).",
+        "status": "open",
+        "confidence": "low",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E15"
+        ],
+        "facts": [
+          {
+            "text": "Infra events show only the OOMKill and container start on the same pod; no node, cluster, or certificate events in the window.",
+            "evidence_ids": [
+              "E15"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Stop the bleeding now: revert fraud-gbm to v6 (or disable the scheduled v7 hot-reload) and/or temporarily raise the fraud-svc memory limit above 2048Mi. Memory was back at 1.88GB and rising at 10:25, so another OOM is likely if v7 stays loaded.",
+        "rationale": "The OOM is the proximate cause; removing the trigger prevents recurrence.",
+        "evidence_ids": [
+          "E1",
+          "E3",
+          "E5",
+          "E7",
+          "E10"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Size fraud-svc for the v7 in-memory footprint (heap profile + load test before rollout). Either increase the memory limit with headroom or reduce model memory (e.g. quantize, drop unused features). Confirm the in-memory size of v7 rather than assuming it tracks the 1.9GB on-disk size.",
+        "rationale": "The 2GiB limit was not sized for a model 2.4x larger than v6.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E3",
+          "E6",
+          "E7",
+          "E10",
+          "E11",
+          "E12"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "prevent",
+        "action": "Gate scheduled model hot-reloads on a memory-headroom check and a staged/canary load, with automatic rollback if the working set exceeds a threshold during or after the reload.",
+        "rationale": "The change at 09:30 went out without a visible memory safeguard and was followed by a 30-minute ramp to the limit.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E6",
+          "E11",
+          "E12"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Keep payments-svc retries capped at 3 with exponential backoff and jitter, plus a retry budget (retries as a fraction of total calls) and a circuit breaker around fraud-svc. Retry limits reduce amplification during recovery but do not prevent this OOM, so they are a secondary control.",
+        "rationale": "Answers the reporter's question: current cap of 3 is appropriate; add a budget and breaker to bound the surge.",
+        "evidence_ids": [
+          "E6",
+          "E8",
+          "E9",
+          "E10",
+          "E12",
+          "E14"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Alert on fraud-svc container memory above about 85% of limit, on OOMKilled events, and on fraud-svc GC overhead warnings. Current alerting only fired on payments-svc fraud-check errors at 10:03, after the OOM.",
+        "rationale": "The memory ramp was visible from 09:30 and roughly 30 minutes before the OOM; no alert fired on it.",
+        "evidence_ids": [
+          "E4",
+          "E6",
+          "E8",
+          "E9",
+          "E10",
+          "E11",
+          "E12",
+          "E15"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Fix telemetry gaps: fraud-svc traces for the window returned empty, and there are no fraud-svc latency or per-client retry metrics. Add these so future retry-storm claims can be checked directly.",
+        "rationale": "Would have confirmed or refuted the retry-amplification contribution directly.",
+        "evidence_ids": [
+          "E3",
+          "E7",
+          "E10"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Heap profile or memory breakdown for fraud-svc v7 (needed to confirm the in-memory footprint and the OOM mechanism)",
+      "fraud-svc latency and error-rate series for 09:30-10:10 (to show whether slowdown preceded the OOM)",
+      "Per-client / per-source retry counts from payments-svc (to measure retry share of the 1.7x surge)",
+      "fraud-svc traces in the window (get_traces returned empty)",
+      "Startup config for fraud-svc (no config or heap settings found in logs)",
+      "Clock/restart discrepancy: infra shows container started at 10:02:11, app log says startup at 10:05:13; may be app model-load delay or clock skew. Not resolved.",
+      "No runbook for fraud-svc memory or model reload (search returned empty)"
+    ],
+    "gaps": [],
+    "security_findings": [],
+    "questions_for_human": [
+      "Was the 2048Mi limit ever sized for v7? Who approved the v7 rollout at 09:30 and was a memory test run?",
+      "Can payments-svc retry counts per request be confirmed (is the cap of 3 enforced in code, config, or both)?",
+      "Should v6 be restored now, or is the v7 model needed for fraud accuracy today?",
+      "Is there a fraud-svc restart at ~10:25 or later as memory approaches the limit again?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "Scheduled job at 09:30 'Model hot-reload: fraud-gbm v6 -> v7', with v7 at 1.9GB vs v6 at 0.8GB.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "Log at 09:33:01: 'scheduled reload: loading model fraud-gbm v7 (1.9GB on disk)'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "container_memory_working_set stepped from 1160 MiB (09:25) to 1600 MiB (09:30), then rose steadily to 2010 MiB (10:00).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Kubernetes event at 10:02:08: pod/fraud-svc-6f7-abc OOMKilled, 'exceeded memory limit (2048Mi)'.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Container memory limit is 2048Mi, on node ip-10-0-1-44; the service is single-deployment.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0001"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "GC overhead warning at 10:04:49: heap 1.98GiB / limit 2.0GiB.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "requests_per_sec was flat at about 305-312 from 09:20 to 10:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "payments-svc logged fraud-check failures and a retry (attempt 2/3) starting at 10:02:09-10:02:10.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "The OOM kill (10:02:08) precedes the first payments error (10:02:09) and the retry (10:02:10); the kill is the earlier event.",
+        "tools": [
+          "get_infra_events",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0004",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Inbound request rate was flat (about 310 rps) before the restart; the 1.7x surge is logged only at 10:05:30, after the crash.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "Reporter's timing is off: the crash was at 10:02:08 (OOMKilled), not 10:05. The 10:05 timestamp is the app's startup log.",
+        "tools": [
+          "get_infra_events",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "fraud-svc log at 10:05:30: 'inbound request rate 1.7x baseline (client retries)'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "fraud_check_errors reached 412/min in the 10:05 bucket, then 0 by 10:10.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Retries are capped at 3 attempts, and the payments-svc log shows fraud check recovered at 10:02:45, so the storm was not sustained.",
+        "tools": [
+          "search_logs",
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "Infra events show only the OOMKill and container start on the same pod; no node, cluster, or certificate events in the window.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0017"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 7,
+    "input_tokens": 97058,
+    "output_tokens": 13047,
+    "cache_read_tokens": 73800,
+    "cache_write_tokens": 23242,
+    "reasoning_tokens": 3182,
+    "cost_usd": 0.010168,
+    "unpriced_calls": 0,
+    "tool_calls": 18,
+    "latency_ms": 55434.61
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 7,
+      "input_tokens": 97058,
+      "output_tokens": 13047,
+      "cache_read_tokens": 73800,
+      "cache_write_tokens": 23242,
+      "reasoning_tokens": 3182,
+      "cost_usd": 0.010168,
+      "unpriced_calls": 0,
+      "tool_calls": 18,
+      "latency_ms": 55434.61
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 7,
+      "input_tokens": 97058,
+      "output_tokens": 13047,
+      "cache_read_tokens": 73800,
+      "cache_write_tokens": 23242,
+      "reasoning_tokens": 3182,
+      "cost_usd": 0.010168,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 55434.61
+    }
+  },
+  "tool_calls": 18,
+  "latency_s": 55.472,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {
+        "service": "fraud-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "payments-svc",
+            "kind": "service",
+            "depends_on": [
+              "fraud-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "fraud-svc",
+            "kind": "service",
+            "depends_on": [],
+            "notes": "Single deployment, memory limit 2048Mi; runs on node ip-10-0-1-44. Hot-reloads ML model on schedule."
+          }
+        ],
+        "upstream": [
+          "payments-svc"
+        ],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-06-18T09:30:00Z",
+        "end": "2026-06-18T11:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-06-18T10:03:00Z",
+            "name": "PaymentsFraudCheckErrors",
+            "severity": "critical",
+            "entity": "payments-svc",
+            "state": "firing",
+            "summary": "fraud check errors > 50/min"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-06-18T08:00:00Z",
+        "end": "2026-06-18T11:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-06-18T09:30:00Z",
+            "kind": "scheduled_job",
+            "service": "fraud-svc",
+            "summary": "Model hot-reload: fraud-gbm v6 -> v7",
+            "author": "ml-platform",
+            "details": "v7 adds 340 features; serialized size 1.9GB (v6: 0.8GB)."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-06-18T09:30:00Z",
+        "end": "2026-06-18T11:00:00Z",
+        "level": "WARN",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-06-18T10:02:09Z",
+            "service": "payments-svc",
+            "level": "ERROR",
+            "message": "fraud check failed: upstream connect error or disconnect/reset before headers. reset reason: connection termination",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-06-18T10:02:10Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "retrying fraud check (attempt 2/3)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-06-18T10:04:49Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "GC overhead high: heap 1.98GiB / limit 2.0GiB",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          },
+          {
+            "ts": "2026-06-18T10:05:30Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "inbound request rate 1.7x baseline (client retries)",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-06-18T09:30:00Z",
+        "end": "2026-06-18T11:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-06-18T10:02:08Z",
+            "source": "kubernetes",
+            "entity": "pod/fraud-svc-6f7-abc",
+            "reason": "OOMKilled",
+            "message": "Container fraud exceeded memory limit (2048Mi) and was killed"
+          },
+          {
+            "ts": "2026-06-18T10:02:11Z",
+            "source": "kubernetes",
+            "entity": "pod/fraud-svc-6f7-abc",
+            "reason": "Started",
+            "message": "Started container fraud"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-06-18T09:00:00Z",
+        "end": "2026-06-18T10:30:00Z",
+        "service": "fraud-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "fraud-svc",
+            "name": "container_memory_working_set",
+            "unit": "MiB",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-06-18T09:20:00Z",
+                "value": 1150.0
+              },
+              {
+                "ts": "2026-06-18T09:25:00Z",
+                "value": 1160.0
+              },
+              {
+                "ts": "2026-06-18T09:30:00Z",
+                "value": 1600.0
+              },
+              {
+                "ts": "2026-06-18T09:35:00Z",
+                "value": 1690.0
+              },
+              {
+                "ts": "2026-06-18T09:40:00Z",
+                "value": 1760.0
+              },
+              {
+                "ts": "2026-06-18T09:45:00Z",
+                "value": 1830.0
+              },
+              {
+                "ts": "2026-06-18T09:50:00Z",
+                "value": 1890.0
+              },
+              {
+                "ts": "2026-06-18T09:55:00Z",
+                "value": 1950.0
+              },
+              {
+                "ts": "2026-06-18T10:00:00Z",
+                "value": 2010.0
+              },
+              {
+                "ts": "2026-06-18T10:05:00Z",
+                "value": 640.0
+              },
+              {
+                "ts": "2026-06-18T10:10:00Z",
+                "value": 1590.0
+              },
+              {
+                "ts": "2026-06-18T10:15:00Z",
+                "value": 1700.0
+              },
+              {
+                "ts": "2026-06-18T10:20:00Z",
+                "value": 1790.0
+              },
+              {
+                "ts": "2026-06-18T10:25:00Z",
+                "value": 1880.0
+              }
+            ]
+          },
+          {
+            "service": "fraud-svc",
+            "name": "requests_per_sec",
+            "unit": "rps",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-06-18T09:20:00Z",
+                "value": 310.0
+              },
+              {
+                "ts": "2026-06-18T09:25:00Z",
+                "value": 305.0
+              },
+              {
+                "ts": "2026-06-18T09:30:00Z",
+                "value": 312.0
+              },
+              {
+                "ts": "2026-06-18T09:35:00Z",
+                "value": 308.0
+              },
+              {
+                "ts": "2026-06-18T09:40:00Z",
+                "value": 311.0
+              },
+              {
+                "ts": "2026-06-18T09:45:00Z",
+                "value": 309.0
+              },
+              {
+                "ts": "2026-06-18T09:50:00Z",
+                "value": 306.0
+              },
+              {
+                "ts": "2026-06-18T09:55:00Z",
+                "value": 310.0
+              },
+              {
+                "ts": "2026-06-18T10:00:00Z",
+                "value": 312.0
+              },
+              {
+                "ts": "2026-06-18T10:05:00Z",
+                "value": 520.0
+              },
+              {
+                "ts": "2026-06-18T10:10:00Z",
+                "value": 315.0
+              },
+              {
+                "ts": "2026-06-18T10:15:00Z",
+                "value": 309.0
+              },
+              {
+                "ts": "2026-06-18T10:20:00Z",
+                "value": 311.0
+              },
+              {
+                "ts": "2026-06-18T10:25:00Z",
+                "value": 308.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "container_memory_working_set",
+            "labels": {}
+          },
+          {
+            "name": "requests_per_sec",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-06-18T09:00:00Z",
+        "end": "2026-06-18T10:30:00Z",
+        "service": "fraud-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-06-18T09:33:01Z",
+            "service": "fraud-svc",
+            "level": "INFO",
+            "message": "scheduled reload: loading model fraud-gbm v7 (1.9GB on disk)",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          },
+          {
+            "ts": "2026-06-18T10:04:49Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "GC overhead high: heap 1.98GiB / limit 2.0GiB",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          },
+          {
+            "ts": "2026-06-18T10:05:13Z",
+            "service": "fraud-svc",
+            "level": "INFO",
+            "message": "starting fraud-svc (previous container exit code 137)",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          },
+          {
+            "ts": "2026-06-18T10:05:30Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "inbound request rate 1.7x baseline (client retries)",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_changes",
+      "args": {
+        "service": "fraud-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-06-18T09:30:00Z",
+            "kind": "scheduled_job",
+            "service": "fraud-svc",
+            "summary": "Model hot-reload: fraud-gbm v6 -> v7",
+            "author": "ml-platform",
+            "details": "v7 adds 340 features; serialized size 1.9GB (v6: 0.8GB)."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-06-18T09:30:00Z",
+        "end": "2026-06-18T10:30:00Z",
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "payments-svc",
+            "name": "fraud_check_errors",
+            "unit": "per_min",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-06-18T09:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T09:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T09:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T09:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T09:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T09:55:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T10:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T10:05:00Z",
+                "value": 412.0
+              },
+              {
+                "ts": "2026-06-18T10:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T10:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T10:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-06-18T10:25:00Z",
+                "value": 0.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "fraud_check_errors",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-06-18T09:50:00Z",
+        "end": "2026-06-18T10:20:00Z",
+        "service": "payments-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-06-18T10:02:09Z",
+            "service": "payments-svc",
+            "level": "ERROR",
+            "message": "fraud check failed: upstream connect error or disconnect/reset before headers. reset reason: connection termination",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-06-18T10:02:10Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "retrying fraud check (attempt 2/3)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-06-18T10:02:45Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "fraud check recovered",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "fraud-svc memory model reload OOM"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "fraud model memory OOM retry"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-006",
+            "date": "2026-02-09T00:00:00Z",
+            "title": "Payments retry storm overloaded fraud-svc",
+            "summary": "A slow fraud-svc release caused payments-svc to retry 5x per request, overloading fraud-svc.",
+            "root_cause": "Unbounded retries in payments-svc.",
+            "resolution": "Capped retries at 3."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-06-18T10:00:00Z",
+        "end": "2026-06-18T10:10:00Z",
+        "service": "fraud-svc",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-06-18T10:00:00Z",
+        "end": "2026-06-18T10:10:00Z",
+        "service": "fraud-svc",
+        "level": "DEBUG",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-06-18T10:04:49Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "GC overhead high: heap 1.98GiB / limit 2.0GiB",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          },
+          {
+            "ts": "2026-06-18T10:05:13Z",
+            "service": "fraud-svc",
+            "level": "INFO",
+            "message": "starting fraud-svc (previous container exit code 137)",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          },
+          {
+            "ts": "2026-06-18T10:05:30Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "inbound request rate 1.7x baseline (client retries)",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_changes",
+      "args": {
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_external_report",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": []
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_infra_events",
+      "args": {
+        "entity": "fraud-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-06-18T10:02:08Z",
+            "source": "kubernetes",
+            "entity": "pod/fraud-svc-6f7-abc",
+            "reason": "OOMKilled",
+            "message": "Container fraud exceeded memory limit (2048Mi) and was killed"
+          },
+          {
+            "ts": "2026-06-18T10:02:11Z",
+            "source": "kubernetes",
+            "entity": "pod/fraud-svc-6f7-abc",
+            "reason": "Started",
+            "message": "Started container fraud"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-06-18T09:00:00Z",
+        "end": "2026-06-18T10:30:00Z",
+        "query": "heap|Xmx|memory|config|limit",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-06-18T10:04:49Z",
+            "service": "fraud-svc",
+            "level": "WARN",
+            "message": "GC overhead high: heap 1.98GiB / limit 2.0GiB",
+            "attrs": {
+              "host": "ip-10-0-1-44"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

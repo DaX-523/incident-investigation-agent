@@ -1,0 +1,19 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.016767,
+  "verdict": {
+    "root_cause": "partial",
+    "root_cause_reason": "The report correctly identifies node ip-10-0-3-17 and slow RocksDB reads as the immediate mechanism behind the checkout timeouts, but it does not name the key originating change: a degraded EBS volume behind that node. It treats the node fault as unproven rather than the root cause.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2
+    ],
+    "unsupported_claims": [
+      "\"readiness stayed at 100%\"",
+      "\"Only the requests routed to the affected pods fail\""
+    ]
+  }
+}

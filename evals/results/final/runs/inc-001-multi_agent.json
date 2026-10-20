@@ -1,0 +1,2371 @@
+{
+  "scenario": "inc-001",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Checkout failures ~20% since shortly after 14:00 UTC",
+    "outcome": "conclusive",
+    "summary": "Since the checkout-svc v2.14.0 deploy at 14:01Z (rolled to 100% by 14:04), checkout 5xx rate rose from about 0.3% to about 21-22% (E1, E20), and the CheckoutErrorRateHigh alert fired at 14:08Z (E7). Confirmed by tool data: the failing requests carry a TypeError at formatPrice (src/pricing/format.ts:41) reading 'code' of undefined, on carts with cart_schema=v1 (E3, E25); the successful trace for a v2 cart passes through the same function (E5, E26); and the v2.14.0 change reads cart.currency.code instead of a global default (E12, E36). No infra events, payments-svc 5xx (flat at 0.1%), or orders-db latency change coincide with the onset (E8, E16, E22, E24). Assumptions, not observed: that every v1 cart fails and that the failure share equals the v1 cart share of 22.4% (E6). Only four formatPrice errors appear in logs for 11:00-14:30, which is far fewer than a 21% failure rate would produce, and no currency or locale breakdown was obtainable (E9), so the currency-clustering test is incomplete. The catalog-svc deploy at 11:20 is not linked to checkout (E28), but its effect was not measured because metrics start at 13:30 (E29).",
+    "root_cause": "The checkout-svc v2.14.0 change to formatPrice (multi-currency price formatting, deployed 14:01Z) reads cart.currency.code with no guard. Carts on schema v1 do not have a currency object, so the read of 'code' on undefined throws a TypeError inside pricing.formatPrice (E3, E12, E25). The exception is not handled, so checkout returns a 5xx and the customer sees 'Something went wrong'. Successful v2 carts do not hit this error (E5, E26). The share of failing requests matching the v1 cart share (~22%, E6) is a correlation that has not been confirmed per request, and the log count is much lower than the error rate, so the exact failing population is not fully established.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H5",
+        "statement": "The v2.14.0 multi-currency price formatting change introduced an unguarded read of cart.currency.code, causing a TypeError on carts using schema v1 (those without currency.code), affecting ~22% of checkouts with v1 carts and resulting in 5xx errors.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E12",
+          "E25",
+          "E26",
+          "E36"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "Checkout-svc ERROR logs in 11:00-14:30 contain 4 entries, all the same signature: 'TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)', at 14:04:51, 14:05:40, 14:06:18 and 14:15:44, all with version=v2.14.0 and cart_schema=v1. The result count was below the limit.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "checkout-svc INFO log 'Starting checkout-svc v2.14.0 (pod checkout-svc-6b8d-1)' at 14:01:12Z. The 14:01 deploy timing is confirmed by this log line.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "A successful POST /checkout returned 200 in 212 ms at 14:05:03Z with attrs cart_schema=v2 and version=v2.14.0, logged during the same minutes as the formatPrice TypeErrors (cart_schema=v1).",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "WARN log at 14:11:30Z: 'cart_schema=v1 carts: 22.4% of active carts (migration to v2 pending, ticket CART-212)'. The v1 cart share (22.4%) is close to the observed 5xx rate (~21-22%), and the error logs carry only v1 cart attributes.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "checkout-svc deploy v2.13.2 -> v2.14.0 (multi-currency price formatting) at 2026-09-14T14:01:00Z. Change details: formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04. The change summary text is truncated (\"PR\" with no number).",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Error trace t-c01-fail-1 at 14:05:40Z (duration 14 ms): checkout-svc span pricing.formatPrice errored in 2 ms with attribute cart_schema=v1. The trace has no payments-svc or orders-db span.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Successful trace t-c01-ok-1 at 14:05:03Z (212 ms): checkout-svc pricing.formatPrice succeeded in 1 ms with cart_schema=v2, and payments-svc authorize succeeded in 185 ms.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "The only checkout-svc change in the unfiltered sweep is v2.13.2 -> v2.14.0 (multi-currency price formatting) at 2026-09-14T14:01:00Z, rolled to 100% at 14:04. formatPrice now reads cart.currency.code instead of a global default currency.",
+            "evidence_ids": [
+              "E36"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Carts with schema v1 do not include currency.code",
+          "FormatPrice exceptions bubble up as 5xx responses"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H1",
+        "statement": "The checkout-svc v2.14.0 deploy (multi-currency price formatting, 14:01) throws an unhandled error for some currency or locale inputs, so checkouts that hit that path return 'Something went wrong'. This matches the timing and the roughly 20% failure rate.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E3",
+          "E6",
+          "E12",
+          "E25",
+          "E26",
+          "E4",
+          "E5",
+          "E7",
+          "E13",
+          "E17",
+          "E20",
+          "E27",
+          "E36"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "checkout-svc http_5xx_rate was 0.2-0.3% from 13:30 to 14:00, then 18.5% at 14:05, 21.2% at 14:10, 22.0% at 14:15, 21.7% at 14:20, 22.4% at 14:25, 21.9% at 14:30. The step change occurs between the 14:00 and 14:05 samples.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Checkout-svc ERROR logs in 11:00-14:30 contain 4 entries, all the same signature: 'TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)', at 14:04:51, 14:05:40, 14:06:18 and 14:15:44, all with version=v2.14.0 and cart_schema=v1. The result count was below the limit.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "WARN log at 14:11:30Z: 'cart_schema=v1 carts: 22.4% of active carts (migration to v2 pending, ticket CART-212)'. The v1 cart share (22.4%) is close to the observed 5xx rate (~21-22%), and the error logs carry only v1 cart attributes.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "checkout-svc deploy v2.13.2 -> v2.14.0 (multi-currency price formatting) at 2026-09-14T14:01:00Z. Change details: formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04. The change summary text is truncated (\"PR\" with no number).",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Error trace t-c01-fail-1 at 14:05:40Z (duration 14 ms): checkout-svc span pricing.formatPrice errored in 2 ms with attribute cart_schema=v1. The trace has no payments-svc or orders-db span.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Successful trace t-c01-ok-1 at 14:05:03Z (212 ms): checkout-svc pricing.formatPrice succeeded in 1 ms with cart_schema=v2, and payments-svc authorize succeeded in 185 ms.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "checkout-svc INFO log 'Starting checkout-svc v2.14.0 (pod checkout-svc-6b8d-1)' at 14:01:12Z. The 14:01 deploy timing is confirmed by this log line.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "A successful POST /checkout returned 200 in 212 ms at 14:05:03Z with attrs cart_schema=v2 and version=v2.14.0, logged during the same minutes as the formatPrice TypeErrors (cart_schema=v1).",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Alert CheckoutErrorRateHigh fired at 14:08:00Z (critical, checkout-svc): '5xx rate 21.2% > 2% for 3m'. No other alerts for any service appear in 11:00-14:30.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "The only checkout-svc change recorded between 11:00 and 14:30 on 2026-09-14 is the v2.14.0 deploy at 14:01. No other checkout-svc deploy, config, or flag change appears in that window.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Past incident PIR-2026-031 (2026-05-12): checkout 5xx for 25 minutes after checkout-svc v2.9.0; root cause was unguarded access to cart.promo (null field access); rolled back and null checks added. This is a prior case of a checkout-svc deploy causing checkout errors through unguarded cart-field access. It is not a currency or price-formatting incident.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "checkout-svc http_5xx_rate was 0.2-0.3% from 13:30 through 14:00, then 18.5% at 14:05, and 21.2-22.4% from 14:10 through 14:30.",
+            "evidence_ids": [
+              "E20"
+            ]
+          },
+          {
+            "text": "Alert CheckoutErrorRateHigh fired at 14:08:00Z on checkout-svc: 5xx rate 21.2% > 2% for 3m. No other alerts appear in 11:00-14:30.",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "The only checkout-svc change in the unfiltered sweep is v2.13.2 -> v2.14.0 (multi-currency price formatting) at 2026-09-14T14:01:00Z, rolled to 100% at 14:04. formatPrice now reads cart.currency.code instead of a global default currency.",
+            "evidence_ids": [
+              "E36"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The unhandled error path is triggered only by certain cart inputs"
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H2",
+        "statement": "Degradation in payments-svc or psp-gateway (timeouts or errors from the external PSP) causes checkout-svc to fail a subset of payment authorizations, which surface to customers as generic checkout errors.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E2",
+          "E21",
+          "E22",
+          "E25",
+          "E26",
+          "E28",
+          "E37",
+          "E3",
+          "E7",
+          "E14"
+        ],
+        "facts": [
+          {
+            "text": "checkout-svc latency_p99 stayed between 396 and 430 ms across 13:30-14:30, with no rise after 14:00.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "checkout-svc latency_p99 stayed between 396 and 430 ms across 13:30-14:30, with no step change at 14:05 when the error rate jumped.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "payments-svc http_5xx_rate was a flat 0.1% at every point from 13:30 through 14:30, including after 14:05.",
+            "evidence_ids": [
+              "E22"
+            ]
+          },
+          {
+            "text": "Error trace t-c01-fail-1 at 14:05:40Z (duration 14 ms): checkout-svc span pricing.formatPrice errored in 2 ms with attribute cart_schema=v1. The trace has no payments-svc or orders-db span.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Successful trace t-c01-ok-1 at 14:05:03Z (212 ms): checkout-svc pricing.formatPrice succeeded in 1 ms with cart_schema=v2, and payments-svc authorize succeeded in 185 ms.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Topology: checkout-svc depends on payments-svc and orders-db. payments-svc depends on psp-gateway. checkout-svc does not depend on catalog-svc; catalog-svc sits upstream of api-gateway only.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "The unfiltered change sweep returned no changes for payments-svc, psp-gateway or orders-db; the only changes in 2026-08-31 to 2026-09-14 are the catalog-svc deploy at 11:20 and the checkout-svc deploy at 14:01.",
+            "evidence_ids": [
+              "E37"
+            ]
+          },
+          {
+            "text": "Checkout-svc ERROR logs in 11:00-14:30 contain 4 entries, all the same signature: 'TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)', at 14:04:51, 14:05:40, 14:06:18 and 14:15:44, all with version=v2.14.0 and cart_schema=v1. The result count was below the limit.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Alert CheckoutErrorRateHigh fired at 14:08:00Z (critical, checkout-svc): '5xx rate 21.2% > 2% for 3m'. No other alerts for any service appear in 11:00-14:30.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Unfiltered 14-day change sweep (all services, from 2026-08-31T11:00Z) returned exactly two changes: catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak) at 11:20:00Z, and the checkout-svc v2.14.0 deploy at 14:01:00Z. No changes to payments-svc, psp-gateway, orders-db, or api-gateway appear in the sweep. Returned range ends at 14:01 although the request ran to 15:00; no changes are shown after 14:01.",
+            "evidence_ids": [
+              "E14"
+            ]
+          }
+        ],
+        "assumptions": [
+          "payments-svc metrics would expose elevated 5xx or latency if PSP calls failed"
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H3",
+        "statement": "Latency or connection exhaustion on orders-db causes checkout-svc order writes to time out for a fraction of requests.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E2",
+          "E21",
+          "E24",
+          "E25",
+          "E26",
+          "E28",
+          "E37",
+          "E3",
+          "E7",
+          "E14"
+        ],
+        "facts": [
+          {
+            "text": "checkout-svc latency_p99 stayed between 396 and 430 ms across 13:30-14:30, with no rise after 14:00.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "checkout-svc latency_p99 stayed between 396 and 430 ms across 13:30-14:30, with no step change at 14:05 when the error rate jumped.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "orders-db cpu_utilization was 34-36% from 13:30 to 14:00 and fell to 29-31% from 14:05 onward. No latency or connection metrics were available for orders-db.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "Error trace t-c01-fail-1 at 14:05:40Z (duration 14 ms): checkout-svc span pricing.formatPrice errored in 2 ms with attribute cart_schema=v1. The trace has no payments-svc or orders-db span.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Successful trace t-c01-ok-1 at 14:05:03Z (212 ms): checkout-svc pricing.formatPrice succeeded in 1 ms with cart_schema=v2, and payments-svc authorize succeeded in 185 ms.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Topology: checkout-svc depends on payments-svc and orders-db. payments-svc depends on psp-gateway. checkout-svc does not depend on catalog-svc; catalog-svc sits upstream of api-gateway only.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "The unfiltered change sweep returned no changes for payments-svc, psp-gateway or orders-db; the only changes in 2026-08-31 to 2026-09-14 are the catalog-svc deploy at 11:20 and the checkout-svc deploy at 14:01.",
+            "evidence_ids": [
+              "E37"
+            ]
+          },
+          {
+            "text": "Checkout-svc ERROR logs in 11:00-14:30 contain 4 entries, all the same signature: 'TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)', at 14:04:51, 14:05:40, 14:06:18 and 14:15:44, all with version=v2.14.0 and cart_schema=v1. The result count was below the limit.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Alert CheckoutErrorRateHigh fired at 14:08:00Z (critical, checkout-svc): '5xx rate 21.2% > 2% for 3m'. No other alerts for any service appear in 11:00-14:30.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Unfiltered 14-day change sweep (all services, from 2026-08-31T11:00Z) returned exactly two changes: catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak) at 11:20:00Z, and the checkout-svc v2.14.0 deploy at 14:01:00Z. No changes to payments-svc, psp-gateway, orders-db, or api-gateway appear in the sweep. Returned range ends at 14:01 although the request ran to 15:00; no changes are shown after 14:01.",
+            "evidence_ids": [
+              "E14"
+            ]
+          }
+        ],
+        "assumptions": [
+          "orders-db would show latency or resource strain under load"
+        ]
+      },
+      {
+        "rank": 5,
+        "hypothesis_id": "H4",
+        "statement": "The catalog-svc v5.2.1 search ranking deploy (11:20) returns malformed or slow responses through api-gateway that checkout-svc cannot process, causing intermittent failures.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E3",
+          "E28",
+          "E32",
+          "E33",
+          "E34",
+          "E38",
+          "E7"
+        ],
+        "facts": [
+          {
+            "text": "Checkout-svc ERROR logs in 11:00-14:30 contain 4 entries, all the same signature: 'TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)', at 14:04:51, 14:05:40, 14:06:18 and 14:15:44, all with version=v2.14.0 and cart_schema=v1. The result count was below the limit.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Topology: checkout-svc depends on payments-svc and orders-db. payments-svc depends on psp-gateway. checkout-svc does not depend on catalog-svc; catalog-svc sits upstream of api-gateway only.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "No infra events were returned for any entity in 10:00-14:30 UTC on 2026-09-14.",
+            "evidence_ids": [
+              "E32"
+            ]
+          },
+          {
+            "text": "No infra events were returned for entity substring 'catalog' from 2026-09-13T00:00 to 2026-09-14T14:30 UTC.",
+            "evidence_ids": [
+              "E33"
+            ]
+          },
+          {
+            "text": "No infra events were returned for entity substring 'catalog-db' from 2026-09-13T00:00 to 2026-09-14T14:30 UTC.",
+            "evidence_ids": [
+              "E34"
+            ]
+          },
+          {
+            "text": "The catalog-svc change window starts at 11:20 and the checkout error page fires at 14:08. The catalog deploy is 2h40m earlier than the reported onset ('since shortly after 14:00'), and no catalog-related infra events were recorded before or after it.",
+            "evidence_ids": [
+              "E38"
+            ]
+          },
+          {
+            "text": "Alert CheckoutErrorRateHigh fired at 14:08:00Z (critical, checkout-svc): '5xx rate 21.2% > 2% for 3m'. No other alerts for any service appear in 11:00-14:30.",
+            "evidence_ids": [
+              "E7"
+            ]
+          }
+        ],
+        "assumptions": [
+          "checkout-svc does not depend on catalog-svc except via api-gateway"
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Roll checkout-svc back from v2.14.0 to v2.13.2 using deployctl rollback checkout-svc --to v2.13.2 (runbook rb-rollback), then confirm the 5xx rate returns to baseline within 5 minutes. Confirm first that checkout-svc is stateless, as the runbook assumes, since this is not verified in the data.",
+        "rationale": "The regression is tied to the 14:01 deploy and nothing else changed in the window (E13, E14). Rollback is the fastest way to stop the errors. The runbook says rollback is safe for stateless services (E19).",
+        "evidence_ids": [
+          "E12",
+          "E13",
+          "E19",
+          "E1",
+          "E3"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Add a guard in formatPrice so a missing cart.currency falls back to the previous default currency, and add unit and integration tests for schema v1 carts. Re-deploy only after those tests pass.",
+        "rationale": "The stack trace shows the failure is an unguarded property access on a missing field (E3, E25). The same class of bug caused PIR-2026-031 (E17), so a guard plus tests addresses the defect itself.",
+        "evidence_ids": [
+          "E3",
+          "E25",
+          "E12",
+          "E17"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "prevent",
+        "action": "Require a canary or staged rollout for checkout-svc with error-rate gating on v1 and v2 cart traffic, and add contract or schema-compatibility tests against cart schema v1 before release. Accelerate the v1 to v2 cart migration tracked in CART-212 so that the legacy path is smaller.",
+        "rationale": "The deploy went to 100% in about three minutes (14:01 to 14:04, E12), so no gate caught the regression. The v1 carts that remain are the trigger (E6).",
+        "evidence_ids": [
+          "E12",
+          "E6",
+          "E17"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "detect",
+        "action": "Alert on the formatPrice TypeError signature and on checkout 5xx split by cart_schema and currency. Add the currency and locale labels that the metrics and logs currently lack, so failure clustering can be tested directly.",
+        "rationale": "The currency and label breakdown returned no series (E9), and the error logs carry no currency or locale attributes. The current signal only showed the aggregate rate, so the cause was found late.",
+        "evidence_ids": [
+          "E9",
+          "E3",
+          "E7"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Currency and locale values on the formatPrice error requests, to test whether the failures cluster by currency as well as cart schema.",
+      "A per-request breakdown of failing checkouts by cart_schema, to confirm that all and only v1 carts fail. Four logged errors do not account for a ~21% failure rate, so logging may be sampled or incomplete.",
+      "A larger trace sample (only one error trace and one success trace were returned, E30) for checkout-svc, including the request path for failing checkouts.",
+      "checkout-svc v2.14.0 startup and config logs around 14:01-14:04, to confirm the effective default currency setting and any errors during rollout.",
+      "The full, untruncated text of the v2.14.0 change record (currently 'PR' with no number, E12).",
+      "checkout-svc, payments-svc and orders-db metrics from 11:00 to 13:30, to establish the baseline and to assess the 11:20 catalog-svc change.",
+      "Metrics, logs or traces for catalog-svc and api-gateway (E11, E33), to test H4 directly.",
+      "psp-gateway metrics and vendor status (E23, E40), and orders-db latency and connection metrics (E24), to close H2 and H3 with direct data.",
+      "Change data after 14:01 (the sweep ended at 14:01 although 15:00 was requested, E14), to confirm there were no later changes."
+    ],
+    "gaps": [
+      "Currency and locale attributes are not present on the formatPrice error logs, so the currency-clustering test (T1) could not be completed; the currency label breakdown returned empty (call-0031).",
+      "api-gateway produced no metrics or logs (call-0017, call-0033), so H4's gateway path could not be examined.",
+      "No payments-svc, psp-gateway, or orders-db metrics, logs, or traces were queried, so H2 and H3 have no direct evidence beyond the checkout-svc error signature and flat latency.",
+      "catalog-svc was not queried, and checkout-svc metrics begin at 13:30, so the 11:20 catalog-svc v5.2.1 change could not be assessed (H4).",
+      "No traces were queried, so the request path for failing checkouts is not confirmed.",
+      "No error-rate, log, or trace data was collected, so the ~20% failure rate, the failure start time, and whether failures cluster on specific currencies or locales are unverified. The H1 mechanism (formatPrice throwing for some cart.currency.code values) is not confirmed.",
+      "Startup/config log lines for checkout-svc v2.14.0 were not searched, so the effective currency setting and any errors around 14:01-14:04 are unchecked.",
+      "No metrics or health data for payments-svc or psp-gateway were collected, so H2 (PSP timeouts or errors) is not tested beyond the absence of recorded changes.",
+      "No latency, connection-pool, or error data for orders-db was collected, so H3 is not tested beyond the absence of recorded changes.",
+      "No catalog-svc or api-gateway response data after 11:20 was collected, so H4 is not tested beyond the 11:20 deploy timing.",
+      "The change record for the 14:01 deploy is truncated (\"PR\" with no number), so the exact PR content is not verified from change data.",
+      "The sweep's returned range ends at 14:01 although 15:00 was requested. This is consistent with no later changes but is not a confirmed absence after 14:01.",
+      "psp-gateway has no metrics in the window (call-0008 empty), so PSP-side timeouts or errors could not be checked for H2.",
+      "orders-db latency, connection-pool and error metrics were not available; only cpu_utilization was returned (call-0009), so H3 is only weakly tested.",
+      "No catalog-svc metrics or traces were queried, so H4 could not be tested against the 11:20 change.",
+      "Deploy and change history for checkout-svc v2.14.0 (14:01) was not checked with tools in my scope, so the deploy timing rests on the triage summary.",
+      "Only 1 error trace and 1 success trace were sampled; no trace-level evidence covers the psp-gateway or orders-db calls for failing requests.",
+      "Metrics for checkout-svc, payments-svc and orders-db begin at 13:30 despite an 11:00 request, so the 11:00-13:30 baseline is missing.",
+      "No catalog-svc or api-gateway traces, logs or error-rate metrics were available to me (no tool for them); whether catalog responses are malformed or slow through api-gateway is unverified (H4).",
+      "Could not check checkout-svc logs for currency/locale errors around 14:01 (H1), since the log tool was out of scope for this task and the allowance was exhausted.",
+      "Runbook search for 'catalog' was not run because the tool-call allowance was exhausted.",
+      "Config snapshots and vendor/PSP status reports were not retrievable (the external report list was empty), so H2 could not be checked against external data."
+    ],
+    "security_findings": [
+      "No manipulation attempts or instructions embedded in tool data were observed. All tool results were treated as data only.",
+      "The v2.14.0 change summary is truncated ('PR' with no number, E12), so the exact content of the change could not be verified from the change record."
+    ],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "checkout-svc http_5xx_rate was 0.2-0.3% from 13:30 to 14:00, then 18.5% at 14:05, 21.2% at 14:10, 22.0% at 14:15, 21.7% at 14:20, 22.4% at 14:25, 21.9% at 14:30. The step change occurs between the 14:00 and 14:05 samples.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "checkout-svc latency_p99 stayed between 396 and 430 ms across 13:30-14:30, with no rise after 14:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "Checkout-svc ERROR logs in 11:00-14:30 contain 4 entries, all the same signature: 'TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)', at 14:04:51, 14:05:40, 14:06:18 and 14:15:44, all with version=v2.14.0 and cart_schema=v1. The result count was below the limit.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0015",
+          "call-0032"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "checkout-svc INFO log 'Starting checkout-svc v2.14.0 (pod checkout-svc-6b8d-1)' at 14:01:12Z. The 14:01 deploy timing is confirmed by this log line.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0032"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "A successful POST /checkout returned 200 in 212 ms at 14:05:03Z with attrs cart_schema=v2 and version=v2.14.0, logged during the same minutes as the formatPrice TypeErrors (cart_schema=v1).",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0032"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "WARN log at 14:11:30Z: 'cart_schema=v1 carts: 22.4% of active carts (migration to v2 pending, ticket CART-212)'. The v1 cart share (22.4%) is close to the observed 5xx rate (~21-22%), and the error logs carry only v1 cart attributes.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0032",
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "Alert CheckoutErrorRateHigh fired at 14:08:00Z (critical, checkout-svc): '5xx rate 21.2% > 2% for 3m'. No other alerts for any service appear in 11:00-14:30.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Infrastructure events query for 13:30-14:30 returned no events (no Kubernetes, node, cert, or cloud events).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0034"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Currency/endpoint label breakdown for checkout-svc http_5xx_rate returned no series. Only the unlabeled http_5xx_rate series is available, so failures cannot be tested for clustering by currency or endpoint.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0031"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Data-quality: checkout-svc metrics were requested for 11:00-14:30 but returned points only from 13:30 to 14:30; the 11:20 catalog-svc change window is therefore not covered by the metrics.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "Data-quality: api-gateway returned no metrics (call-0017) and no logs (call-0033) for 11:00-14:30 and 13:30-14:30. Either the service name differs or it is not instrumented, so api-gateway health cannot be assessed.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0017",
+          "call-0033"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "checkout-svc deploy v2.13.2 -> v2.14.0 (multi-currency price formatting) at 2026-09-14T14:01:00Z. Change details: formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04. The change summary text is truncated (\"PR\" with no number).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "The only checkout-svc change recorded between 11:00 and 14:30 on 2026-09-14 is the v2.14.0 deploy at 14:01. No other checkout-svc deploy, config, or flag change appears in that window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Unfiltered 14-day change sweep (all services, from 2026-08-31T11:00Z) returned exactly two changes: catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak) at 11:20:00Z, and the checkout-svc v2.14.0 deploy at 14:01:00Z. No changes to payments-svc, psp-gateway, orders-db, or api-gateway appear in the sweep. Returned range ends at 14:01 although the request ran to 15:00; no changes are shown after 14:01.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak) deployed at 2026-09-14T11:20:00Z, about 2h41m before the 14:01 checkout-svc deploy. This sweep shows the deploy but no catalog-related error or latency data was collected, so its effect on checkout is not established.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "get_infra_events returned zero events for 2026-09-14T11:00Z to 14:30Z. A second query for 2026-09-10T00:00Z onward (to 15:00Z) also returned zero events. No infrastructure, cluster, node, or certificate events are recorded in either range.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0011",
+          "call-0028"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "Past incident PIR-2026-031 (2026-05-12): checkout 5xx for 25 minutes after checkout-svc v2.9.0; root cause was unguarded access to cart.promo (null field access); rolled back and null checks added. This is a prior case of a checkout-svc deploy causing checkout errors through unguarded cart-field access. It is not a currency or price-formatting incident.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0026"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "Keyword search for 'currency price formatting' in past incidents returned zero results. Keyword search for 'checkout currency price formatting' in runbooks returned zero results. The unfiltered list calls did return PIR-2026-031 and runbook rb-rollback, so the search index is working. No prior currency or price-formatting incident or runbook exists in the organisation's records.",
+        "tools": [
+          "search_past_incidents",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0012",
+          "call-0013",
+          "call-0026",
+          "call-0027"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "Runbook rb-rollback ('Service rollback'): use `deployctl rollback <service> --to <version>`; rollback is described as safe for stateless services; verify error rate within 5 minutes. Applicable to reverting checkout-svc to v2.13.2 if H1 is confirmed.",
+        "tools": [
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0027"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "checkout-svc http_5xx_rate was 0.2-0.3% from 13:30 through 14:00, then 18.5% at 14:05, and 21.2-22.4% from 14:10 through 14:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "checkout-svc latency_p99 stayed between 396 and 430 ms across 13:30-14:30, with no step change at 14:05 when the error rate jumped.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "payments-svc http_5xx_rate was a flat 0.1% at every point from 13:30 through 14:30, including after 14:05.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "psp-gateway returned no metric series for 11:00-14:30 (empty result, no available series).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "orders-db cpu_utilization was 34-36% from 13:30 to 14:00 and fell to 29-31% from 14:05 onward. No latency or connection metrics were available for orders-db.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "Error trace t-c01-fail-1 at 14:05:40Z (duration 14 ms): checkout-svc span pricing.formatPrice errored in 2 ms with attribute cart_schema=v1. The trace has no payments-svc or orders-db span.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "Successful trace t-c01-ok-1 at 14:05:03Z (212 ms): checkout-svc pricing.formatPrice succeeded in 1 ms with cart_schema=v2, and payments-svc authorize succeeded in 185 ms.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E27",
+        "summary": "Alert CheckoutErrorRateHigh fired at 14:08:00Z on checkout-svc: 5xx rate 21.2% > 2% for 3m. No other alerts appear in 11:00-14:30.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E28",
+        "summary": "Topology: checkout-svc depends on payments-svc and orders-db. payments-svc depends on psp-gateway. checkout-svc does not depend on catalog-svc; catalog-svc sits upstream of api-gateway only.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E29",
+        "summary": "Data quality: checkout-svc, payments-svc and orders-db metric series were returned only from 13:30:00Z, although 11:00:00Z was requested. The 11:00-13:30 period (including the 11:20 catalog change) is not covered by these metrics.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0007",
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E30",
+        "summary": "Data quality: only one error trace and one success trace were returned for checkout-svc and payments-svc in 13:55-14:30, so the trace sample is very small.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0023",
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E31",
+        "summary": "catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak) deployed by catalog-team at 2026-09-14T11:20:00Z. It is the only catalog-svc change in the 10:00-14:30 window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E32",
+        "summary": "No infra events were returned for any entity in 10:00-14:30 UTC on 2026-09-14.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E33",
+        "summary": "No infra events were returned for entity substring 'catalog' from 2026-09-13T00:00 to 2026-09-14T14:30 UTC.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E34",
+        "summary": "No infra events were returned for entity substring 'catalog-db' from 2026-09-13T00:00 to 2026-09-14T14:30 UTC.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0030"
+        ]
+      },
+      {
+        "id": "E35",
+        "summary": "No changes were returned for api-gateway from 2026-09-13T00:00 to 2026-09-14T14:30 UTC.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0029"
+        ]
+      },
+      {
+        "id": "E36",
+        "summary": "The only checkout-svc change in the unfiltered sweep is v2.13.2 -> v2.14.0 (multi-currency price formatting) at 2026-09-14T14:01:00Z, rolled to 100% at 14:04. formatPrice now reads cart.currency.code instead of a global default currency.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E37",
+        "summary": "The unfiltered change sweep returned no changes for payments-svc, psp-gateway or orders-db; the only changes in 2026-08-31 to 2026-09-14 are the catalog-svc deploy at 11:20 and the checkout-svc deploy at 14:01.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E38",
+        "summary": "The catalog-svc change window starts at 11:20 and the checkout error page fires at 14:08. The catalog deploy is 2h40m earlier than the reported onset ('since shortly after 14:00'), and no catalog-related infra events were recorded before or after it.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0018",
+          "call-0019",
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E39",
+        "summary": "Search of past incidents for 'catalog search ranking' returned no matching postmortems.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E40",
+        "summary": "The external reports listing returned no reports (billing, vendor status, config snapshots etc. were not available), so vendor/PSP status could not be checked.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E41",
+        "summary": "Data quality: the infra-event and change queries returned zero results with no errors. The change sweep also has no entries for api-gateway, so these empties may be real or may reflect incomplete coverage of the sources; they were not cross-checked against a second source.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0019",
+          "call-0020",
+          "call-0029",
+          "call-0030"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 16,
+    "input_tokens": 107802,
+    "output_tokens": 26490,
+    "cache_read_tokens": 47046,
+    "cache_write_tokens": 36812,
+    "reasoning_tokens": 10192,
+    "cost_usd": 0.050349,
+    "unpriced_calls": 0,
+    "tool_calls": 34,
+    "latency_ms": 134258.28
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 2328,
+      "output_tokens": 2095,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 994,
+      "cost_usd": 0.00128,
+      "unpriced_calls": 0,
+      "tool_calls": 2,
+      "latency_ms": 10740.41
+    },
+    "observability": {
+      "llm_calls": 3,
+      "input_tokens": 24510,
+      "output_tokens": 5052,
+      "cache_read_tokens": 13263,
+      "cache_write_tokens": 11237,
+      "reasoning_tokens": 1427,
+      "cost_usd": 0.004065,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 21438.94
+    },
+    "change_history": {
+      "llm_calls": 6,
+      "input_tokens": 36872,
+      "output_tokens": 7442,
+      "cache_read_tokens": 21522,
+      "cache_write_tokens": 15330,
+      "reasoning_tokens": 2227,
+      "cost_usd": 0.005856,
+      "unpriced_calls": 0,
+      "tool_calls": 16,
+      "latency_ms": 33884.57
+    },
+    "dependency": {
+      "llm_calls": 3,
+      "input_tokens": 22516,
+      "output_tokens": 4242,
+      "cache_read_tokens": 12261,
+      "cache_write_tokens": 10245,
+      "reasoning_tokens": 1042,
+      "cost_usd": 0.003524,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 22434.18
+    },
+    "reasoning": {
+      "llm_calls": 1,
+      "input_tokens": 5892,
+      "output_tokens": 3653,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 2688,
+      "cost_usd": 0.022554,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 23309.58
+    },
+    "critic": {
+      "llm_calls": 1,
+      "input_tokens": 6636,
+      "output_tokens": 734,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 640,
+      "cost_usd": 0.010529,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 5971.5
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 9048,
+      "output_tokens": 3272,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1174,
+      "cost_usd": 0.002541,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 16479.1
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 14,
+      "input_tokens": 95274,
+      "output_tokens": 22103,
+      "cache_read_tokens": 47046,
+      "cache_write_tokens": 36812,
+      "reasoning_tokens": 6864,
+      "cost_usd": 0.017266,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 104977.2
+    },
+    "o4-mini-2025-04-16": {
+      "llm_calls": 2,
+      "input_tokens": 12528,
+      "output_tokens": 4387,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3328,
+      "cost_usd": 0.033083,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 29281.08
+    }
+  },
+  "tool_calls": 34,
+  "latency_s": 78.996,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "web-frontend",
+            "kind": "web",
+            "depends_on": [
+              "api-gateway"
+            ],
+            "notes": null
+          },
+          {
+            "name": "api-gateway",
+            "kind": "gateway",
+            "depends_on": [
+              "checkout-svc",
+              "catalog-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "checkout-svc",
+            "kind": "service",
+            "depends_on": [
+              "payments-svc",
+              "orders-db"
+            ],
+            "notes": null
+          },
+          {
+            "name": "catalog-svc",
+            "kind": "service",
+            "depends_on": [
+              "catalog-db"
+            ],
+            "notes": null
+          },
+          {
+            "name": "payments-svc",
+            "kind": "service",
+            "depends_on": [
+              "psp-gateway"
+            ],
+            "notes": null
+          },
+          {
+            "name": "psp-gateway",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "third-party payment provider"
+          },
+          {
+            "name": "orders-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "catalog-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-31T14:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T11:20:00Z",
+            "kind": "deploy",
+            "service": "catalog-svc",
+            "summary": "catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak)",
+            "author": "catalog-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-14T14:01:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v2.13.2 -> v2.14.0 (multi-currency price formatting, PR",
+            "author": "checkout-team",
+            "details": "formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-31T11:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T11:20:00Z",
+            "kind": "deploy",
+            "service": "catalog-svc",
+            "summary": "catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak)",
+            "author": "catalog-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-14T14:01:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v2.13.2 -> v2.14.0 (multi-currency price formatting, PR",
+            "author": "checkout-team",
+            "details": "formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-31T11:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T11:20:00Z",
+            "kind": "deploy",
+            "service": "catalog-svc",
+            "summary": "catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak)",
+            "author": "catalog-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-14T14:01:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v2.13.2 -> v2.14.0 (multi-currency price formatting, PR",
+            "author": "checkout-team",
+            "details": "formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "get_topology",
+      "args": {
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "web-frontend",
+            "kind": "web",
+            "depends_on": [
+              "api-gateway"
+            ],
+            "notes": null
+          },
+          {
+            "name": "api-gateway",
+            "kind": "gateway",
+            "depends_on": [
+              "checkout-svc",
+              "catalog-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "checkout-svc",
+            "kind": "service",
+            "depends_on": [
+              "payments-svc",
+              "orders-db"
+            ],
+            "notes": null
+          },
+          {
+            "name": "payments-svc",
+            "kind": "service",
+            "depends_on": [
+              "psp-gateway"
+            ],
+            "notes": null
+          },
+          {
+            "name": "psp-gateway",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "third-party payment provider"
+          },
+          {
+            "name": "orders-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [
+          "api-gateway",
+          "web-frontend"
+        ],
+        "downstream": [
+          "orders-db",
+          "payments-svc",
+          "psp-gateway"
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "checkout-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-14T13:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T13:35:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-14T13:40:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T13:45:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T13:50:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-14T13:55:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T14:00:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-14T14:05:00Z",
+                "value": 18.5
+              },
+              {
+                "ts": "2026-09-14T14:10:00Z",
+                "value": 21.2
+              },
+              {
+                "ts": "2026-09-14T14:15:00Z",
+                "value": 22.0
+              },
+              {
+                "ts": "2026-09-14T14:20:00Z",
+                "value": 21.7
+              },
+              {
+                "ts": "2026-09-14T14:25:00Z",
+                "value": 22.4
+              },
+              {
+                "ts": "2026-09-14T14:30:00Z",
+                "value": 21.9
+              }
+            ]
+          },
+          {
+            "service": "checkout-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-14T13:30:00Z",
+                "value": 410.0
+              },
+              {
+                "ts": "2026-09-14T13:35:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-14T13:40:00Z",
+                "value": 415.0
+              },
+              {
+                "ts": "2026-09-14T13:45:00Z",
+                "value": 405.0
+              },
+              {
+                "ts": "2026-09-14T13:50:00Z",
+                "value": 430.0
+              },
+              {
+                "ts": "2026-09-14T13:55:00Z",
+                "value": 425.0
+              },
+              {
+                "ts": "2026-09-14T14:00:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-14T14:05:00Z",
+                "value": 402.0
+              },
+              {
+                "ts": "2026-09-14T14:10:00Z",
+                "value": 398.0
+              },
+              {
+                "ts": "2026-09-14T14:15:00Z",
+                "value": 401.0
+              },
+              {
+                "ts": "2026-09-14T14:20:00Z",
+                "value": 396.0
+              },
+              {
+                "ts": "2026-09-14T14:25:00Z",
+                "value": 404.0
+              },
+              {
+                "ts": "2026-09-14T14:30:00Z",
+                "value": 399.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          },
+          {
+            "name": "latency_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "payments-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-14T13:30:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T13:35:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T13:40:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T13:45:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T13:50:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T13:55:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:00:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:05:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:10:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:15:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:20:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:25:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-09-14T14:30:00Z",
+                "value": 0.1
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "psp-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "orders-db",
+            "name": "cpu_utilization",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-14T13:30:00Z",
+                "value": 34.0
+              },
+              {
+                "ts": "2026-09-14T13:35:00Z",
+                "value": 35.0
+              },
+              {
+                "ts": "2026-09-14T13:40:00Z",
+                "value": 36.0
+              },
+              {
+                "ts": "2026-09-14T13:45:00Z",
+                "value": 34.0
+              },
+              {
+                "ts": "2026-09-14T13:50:00Z",
+                "value": 35.0
+              },
+              {
+                "ts": "2026-09-14T13:55:00Z",
+                "value": 36.0
+              },
+              {
+                "ts": "2026-09-14T14:00:00Z",
+                "value": 35.0
+              },
+              {
+                "ts": "2026-09-14T14:05:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-09-14T14:10:00Z",
+                "value": 30.0
+              },
+              {
+                "ts": "2026-09-14T14:15:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-09-14T14:20:00Z",
+                "value": 30.0
+              },
+              {
+                "ts": "2026-09-14T14:25:00Z",
+                "value": 29.0
+              },
+              {
+                "ts": "2026-09-14T14:30:00Z",
+                "value": 30.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "cpu_utilization",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T14:01:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v2.13.2 -> v2.14.0 (multi-currency price formatting, PR",
+            "author": "checkout-team",
+            "details": "formatPrice now reads cart.currency.code instead of a global default currency. Rolled to 100% at 14:04."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "currency price formatting"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "checkout currency price formatting"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "checkout-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-14T13:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T13:35:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-14T13:40:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T13:45:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T13:50:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-14T13:55:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-14T14:00:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-14T14:05:00Z",
+                "value": 18.5
+              },
+              {
+                "ts": "2026-09-14T14:10:00Z",
+                "value": 21.2
+              },
+              {
+                "ts": "2026-09-14T14:15:00Z",
+                "value": 22.0
+              },
+              {
+                "ts": "2026-09-14T14:20:00Z",
+                "value": 21.7
+              },
+              {
+                "ts": "2026-09-14T14:25:00Z",
+                "value": 22.4
+              },
+              {
+                "ts": "2026-09-14T14:30:00Z",
+                "value": 21.9
+              }
+            ]
+          },
+          {
+            "service": "checkout-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-14T13:30:00Z",
+                "value": 410.0
+              },
+              {
+                "ts": "2026-09-14T13:35:00Z",
+                "value": 420.0
+              },
+              {
+                "ts": "2026-09-14T13:40:00Z",
+                "value": 415.0
+              },
+              {
+                "ts": "2026-09-14T13:45:00Z",
+                "value": 405.0
+              },
+              {
+                "ts": "2026-09-14T13:50:00Z",
+                "value": 430.0
+              },
+              {
+                "ts": "2026-09-14T13:55:00Z",
+                "value": 425.0
+              },
+              {
+                "ts": "2026-09-14T14:00:00Z",
+                "value": 418.0
+              },
+              {
+                "ts": "2026-09-14T14:05:00Z",
+                "value": 402.0
+              },
+              {
+                "ts": "2026-09-14T14:10:00Z",
+                "value": 398.0
+              },
+              {
+                "ts": "2026-09-14T14:15:00Z",
+                "value": 401.0
+              },
+              {
+                "ts": "2026-09-14T14:20:00Z",
+                "value": 396.0
+              },
+              {
+                "ts": "2026-09-14T14:25:00Z",
+                "value": 404.0
+              },
+              {
+                "ts": "2026-09-14T14:30:00Z",
+                "value": 399.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          },
+          {
+            "name": "latency_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "checkout-svc",
+        "level": "ERROR",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-14T14:04:51Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_88213",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:05:40Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_90117",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:06:18Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_71102",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:15:44Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_66310",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-09-14T14:08:00Z",
+            "name": "CheckoutErrorRateHigh",
+            "severity": "critical",
+            "entity": "checkout-svc",
+            "state": "firing",
+            "summary": "5xx rate 21.2% > 2% for 3m"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T10:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "catalog-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-14T11:20:00Z",
+            "kind": "deploy",
+            "service": "catalog-svc",
+            "summary": "catalog-svc v5.2.0 -> v5.2.1 (search ranking tweak)",
+            "author": "catalog-team",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-14T10:00:00Z",
+        "end": "2026-09-14T14:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-13T00:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "entity": "catalog"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "catalog search ranking"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "get_external_report",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": []
+      }
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-14T13:55:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "checkout-svc",
+        "status": "error",
+        "limit": 30
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c01-fail-1",
+            "start": "2026-09-14T14:05:40Z",
+            "duration_ms": 14.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "api-gateway",
+                "operation": "POST /checkout",
+                "duration_ms": 14.0,
+                "status": "error",
+                "attrs": {}
+              },
+              {
+                "service": "checkout-svc",
+                "operation": "pricing.formatPrice",
+                "duration_ms": 2.0,
+                "status": "error",
+                "attrs": {
+                  "cart_schema": "v1"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-14T13:55:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "payments-svc",
+        "limit": 30
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c01-ok-1",
+            "start": "2026-09-14T14:05:03Z",
+            "duration_ms": 212.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "api-gateway",
+                "operation": "POST /checkout",
+                "duration_ms": 212.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "checkout-svc",
+                "operation": "pricing.formatPrice",
+                "duration_ms": 1.0,
+                "status": "ok",
+                "attrs": {
+                  "cart_schema": "v2"
+                }
+              },
+              {
+                "service": "payments-svc",
+                "operation": "authorize",
+                "duration_ms": 185.0,
+                "status": "ok",
+                "attrs": {}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-14T11:00:00Z",
+        "end": "2026-09-14T14:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-09-14T14:08:00Z",
+            "name": "CheckoutErrorRateHigh",
+            "severity": "critical",
+            "entity": "checkout-svc",
+            "state": "firing",
+            "summary": "5xx rate 21.2% > 2% for 3m"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "search_past_incidents",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-031",
+            "date": "2026-05-12T00:00:00Z",
+            "title": "Checkout 5xx after checkout-svc v2.9.0",
+            "summary": "Checkout errors for 25 minutes after a deploy; null field access on promo codes.",
+            "root_cause": "Unguarded access to cart.promo in v2.9.0.",
+            "resolution": "Rolled back; added null checks."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "search_runbooks",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": [
+          {
+            "id": "rb-rollback",
+            "title": "Service rollback",
+            "body": "Use `deployctl rollback <service> --to <version>`. Rollback is safe for stateless services; verify error rate within 5 minutes."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-10T00:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-13T00:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-13T00:00:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "entity": "catalog-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0031",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-14T13:50:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "checkout-svc",
+        "name": "http_5xx_rate",
+        "labels": {
+          "currency": "*",
+          "endpoint": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": [
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0032",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T13:55:00Z",
+        "end": "2026-09-14T14:20:00Z",
+        "query": "formatPrice|currency|cart_schema|locale|v2.14.0|deploy|startup",
+        "service": "checkout-svc",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-14T14:01:12Z",
+            "service": "checkout-svc",
+            "level": "INFO",
+            "message": "Starting checkout-svc v2.14.0 (pod checkout-svc-6b8d-1)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-14T14:04:51Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_88213",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:05:03Z",
+            "service": "checkout-svc",
+            "level": "INFO",
+            "message": "POST /checkout 200 in 212ms",
+            "attrs": {
+              "cart_schema": "v2",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:05:40Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_90117",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:06:18Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_71102",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          },
+          {
+            "ts": "2026-09-14T14:11:30Z",
+            "service": "checkout-svc",
+            "level": "WARN",
+            "message": "cart_schema=v1 carts: 22.4% of active carts (migration to v2 pending, ticket CART-212)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-14T14:15:44Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "TypeError: Cannot read properties of undefined (reading 'code') at formatPrice (src/pricing/format.ts:41)",
+            "attrs": {
+              "cart_id": "c_66310",
+              "cart_schema": "v1",
+              "version": "v2.14.0"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0033",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-14T14:30:00Z",
+        "service": "api-gateway",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0034",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-14T13:30:00Z",
+        "end": "2026-09-14T14:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    }
+  ]
+}

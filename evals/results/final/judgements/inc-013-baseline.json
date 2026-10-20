@@ -1,0 +1,18 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.019418,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same component and mechanism as the key: the campaign-scheduler/dialer retry behavior causes carrier call-attempt-rate overruns, 429 rejections, and UNREACHABLE marks. It does not hinge on the channel limit or a pure carrier outage.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2
+    ],
+    "unsupported_claims": [
+      "\"when the 1-minute average was ~11.5/sec\""
+    ]
+  }
+}

@@ -1,0 +1,2055 @@
+{
+  "scenario": "inc-008",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "openai",
+  "report": {
+    "incident_title": "Orders stuck in \"Processing\", confirmation emails not sent",
+    "outcome": "inconclusive",
+    "summary": "Confirmed: the incident is partition-scoped, not fleet-wide. Starting at 2026-08-21T13:17:52Z, orders-worker-7 began crash-looping, and at 13:52:15Z orders-worker-2 did the same; those exact pods map statically to Kafka partitions 7 and 2, which are also the only partitions with sustained consumer lag growth. Because orders-worker is the consumer that finalizes orders after they are created and depends on downstream notification, orders assigned to those partitions remained stuck in Processing and did not send confirmation emails. \n\nMost likely, but not directly proven, a subset of OrderPlaced payloads introduced after checkout-svc v4.1.0 was deployed at 13:05 caused orders-worker to crash on affected messages; the specific suspected mechanism is a schema/deserialization problem related to the new premium gift wrap field. That mechanism remains inferential because crash logs, error traces, and message payload inspection were unavailable during the investigation.",
+    "root_cause": null,
+    "confidence": "low",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H5",
+        "statement": "Checkout-svc v4.1.0 (deployed 13:05) adds a \u201cpremium gift wrap\u201d field that, when present in an OrderPlaced event, makes orders-worker panic on deserialisation. Because the consumer set uses static assignment (orders-worker-N \u2192 partition N), the first bad message on partition 7 put pod orders-worker-7 into a crash-loop starting 13:17; a later bad message on partition 2 took down pod orders-worker-2 at 13:52. While those pods repeatedly restart, their partitions stop being consumed, backlog grows, and orders in those partitions remain in \u201cProcessing\u201d with no confirmation email.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E23",
+          "E25",
+          "E26",
+          "E14",
+          "E15",
+          "E19",
+          "E1",
+          "E13",
+          "E18",
+          "E32",
+          "E33"
+        ],
+        "contradicting_evidence": [
+          "E4",
+          "E8",
+          "E10"
+        ],
+        "facts": [
+          {
+            "text": "Change history for 2026-08-21T11:20:00Z..14:30:00Z returned a deploy at 2026-08-21T13:05:00Z for checkout-svc: 'checkout-svc v4.0.3 -> v4.1.0: premium gift wrap option'. This is the only application deploy shown before symptom onset in the broad change query.",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a Kubernetes BackOff on pod/orders-worker-7 at 2026-08-21T13:17:52Z with message 'Back-off restarting failed container orders-worker (exit code 1)'. This event occurs just before the estimated 13:20 onset.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a second Kubernetes BackOff on pod/orders-worker-2 at 2026-08-21T13:52:15Z with message 'Back-off restarting failed container orders-worker (exit code 1)'.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "orders-worker metrics returned only container_restarts_total by pod. Pod orders-worker-7 increased from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and pod orders-worker-2 increased from 0 at 2026-08-21T13:20:00Z to 10 at 2026-08-21T14:25:00Z; returned data ends at 14:25 though the requested window extended to 14:30.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends on notification-svc and orders-db. The deployment note says it uses static assignment where pod orders-worker-N consumes partition N, so a problem in a specific worker pod can isolate to its assigned partition rather than causing a full outage.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends directly on orders-db and notification-svc; it runs as a 12-pod StatefulSet with static partition assignment (orders-worker-N consumes partition N) and no dead-letter queue, so failures can affect only a subset of orders tied to specific pods/partitions or downstream calls on the processing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "A Kubernetes infra-events query for entity `orders-worker-7` in 2026-08-21T13:16:00Z..13:19:30Z returned one event at 2026-08-21T13:17:52Z: `pod/orders-worker-7` reason `BackOff`, message `Back-off restarting failed container orders-worker (exit code 1)`. Quality reported `result_count: 1`, `empty: false`, and no out-of-range note.",
+            "evidence_ids": [
+              "E32"
+            ]
+          },
+          {
+            "text": "A Kubernetes infra-events query for entity `orders-worker-2` in 2026-08-21T13:51:00Z..13:54:30Z returned one event at 2026-08-21T13:52:15Z: `pod/orders-worker-2` reason `BackOff`, message `Back-off restarting failed container orders-worker (exit code 1)`. Quality reported `result_count: 1`, `empty: false`, and no out-of-range note.",
+            "evidence_ids": [
+              "E33"
+            ]
+          },
+          {
+            "text": "get_traces for orders-worker with status=error from 2026-08-21T13:20:00Z onward returned zero traces; quality flagged empty with note 'no results returned'.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "`get_traces` for `orders-worker` with `status:error` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 traces (`empty: true`) in call-0019, while a second trace query over the same window without a status filter returned 1 trace in call-0037, so the trace source was not globally empty for `orders-worker` in this window.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "`get_alerts` for `orders-worker` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 alerts (`empty: true`).",
+            "evidence_ids": [
+              "E10"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The new gift-wrap field is present only on a subset of orders so most partitions never see it",
+          "orders-worker crashes immediately on deserialisation and dies before emitting traces or structured logs",
+          "log/trace gaps are due to the logging cluster maintenance, not absence of crashes"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H1",
+        "statement": "orders-worker is failing on a subset of order payloads after the order is created and marked Processing, so those orders never reach finalization and no confirmation email is triggered.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E9",
+          "E19",
+          "E25",
+          "E26",
+          "E14",
+          "E15",
+          "E13",
+          "E18",
+          "E32",
+          "E33",
+          "E23",
+          "E31",
+          "E41"
+        ],
+        "contradicting_evidence": [
+          "E4",
+          "E8",
+          "E10",
+          "E14",
+          "E27"
+        ],
+        "facts": [
+          {
+            "text": "orders-worker metrics returned only container_restarts_total by pod. Pod orders-worker-7 increased from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and pod orders-worker-2 increased from 0 at 2026-08-21T13:20:00Z to 10 at 2026-08-21T14:25:00Z; returned data ends at 14:25 though the requested window extended to 14:30.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "For `orders-worker`, metric `container_restarts_total` increased on pod `orders-worker-7` from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and on pod `orders-worker-2` from 0 at 13:20:00Z to 10 at 14:25:00Z; pod `orders-worker-2` stayed at 0 through 13:50:00Z and then rose to 3 by 13:55:00Z. Returned metric data ends at 14:25:00Z although the requested window extended to 14:30:00Z.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a Kubernetes BackOff on pod/orders-worker-7 at 2026-08-21T13:17:52Z with message 'Back-off restarting failed container orders-worker (exit code 1)'. This event occurs just before the estimated 13:20 onset.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a second Kubernetes BackOff on pod/orders-worker-2 at 2026-08-21T13:52:15Z with message 'Back-off restarting failed container orders-worker (exit code 1)'.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends on notification-svc and orders-db. The deployment note says it uses static assignment where pod orders-worker-N consumes partition N, so a problem in a specific worker pod can isolate to its assigned partition rather than causing a full outage.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends directly on orders-db and notification-svc; it runs as a 12-pod StatefulSet with static partition assignment (orders-worker-N consumes partition N) and no dead-letter queue, so failures can affect only a subset of orders tied to specific pods/partitions or downstream calls on the processing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "A Kubernetes infra-events query for entity `orders-worker-7` in 2026-08-21T13:16:00Z..13:19:30Z returned one event at 2026-08-21T13:17:52Z: `pod/orders-worker-7` reason `BackOff`, message `Back-off restarting failed container orders-worker (exit code 1)`. Quality reported `result_count: 1`, `empty: false`, and no out-of-range note.",
+            "evidence_ids": [
+              "E32"
+            ]
+          },
+          {
+            "text": "A Kubernetes infra-events query for entity `orders-worker-2` in 2026-08-21T13:51:00Z..13:54:30Z returned one event at 2026-08-21T13:52:15Z: `pod/orders-worker-2` reason `BackOff`, message `Back-off restarting failed container orders-worker (exit code 1)`. Quality reported `result_count: 1`, `empty: false`, and no out-of-range note.",
+            "evidence_ids": [
+              "E33"
+            ]
+          },
+          {
+            "text": "Change history for 2026-08-21T11:20:00Z..14:30:00Z returned a deploy at 2026-08-21T13:05:00Z for checkout-svc: 'checkout-svc v4.0.3 -> v4.1.0: premium gift wrap option'. This is the only application deploy shown before symptom onset in the broad change query.",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "Runbook search returned runbook rb-consumer-lag titled 'Kafka consumer lag'; its body says, 'If a single consumer is crash-looping, inspect its logs for the failing offset.'",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "Source-unfiltered infra-event queries around the precise crash moments returned only Kubernetes `BackOff` events with `exit code 1` for `pod/orders-worker-7` at 2026-08-21T13:17:52Z and `pod/orders-worker-2` at 2026-08-21T13:52:15Z`; they did not expose any richer termination message, stack trace, or text mentioning `premiumGiftWrap`, `premium_gift_wrap`, `unknown field`, or JSON deserialisation.",
+            "evidence_ids": [
+              "E41"
+            ]
+          },
+          {
+            "text": "get_traces for orders-worker with status=error from 2026-08-21T13:20:00Z onward returned zero traces; quality flagged empty with note 'no results returned'.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "`get_traces` for `orders-worker` with `status:error` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 traces (`empty: true`) in call-0019, while a second trace query over the same window without a status filter returned 1 trace in call-0037, so the trace source was not globally empty for `orders-worker` in this window.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "`get_alerts` for `orders-worker` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 alerts (`empty: true`).",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "A service-specific change-history query for orders-worker over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+            "evidence_ids": [
+              "E27"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Whatever the bad payload is, it is not handled gracefully and causes the process to exit"
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H2",
+        "statement": "notification-svc is intermittently failing or timing out requests from orders-worker, and orders-worker treats that failure as fatal, leaving affected orders in Processing and preventing confirmation emails.",
+        "status": "inconclusive",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E18"
+        ],
+        "contradicting_evidence": [
+          "E14",
+          "E15",
+          "E1",
+          "E9",
+          "E19",
+          "E25",
+          "E26",
+          "E4",
+          "E8",
+          "E28"
+        ],
+        "facts": [
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends directly on orders-db and notification-svc; it runs as a 12-pod StatefulSet with static partition assignment (orders-worker-N consumes partition N) and no dead-letter queue, so failures can affect only a subset of orders tied to specific pods/partitions or downstream calls on the processing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "orders-worker metrics returned only container_restarts_total by pod. Pod orders-worker-7 increased from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and pod orders-worker-2 increased from 0 at 2026-08-21T13:20:00Z to 10 at 2026-08-21T14:25:00Z; returned data ends at 14:25 though the requested window extended to 14:30.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "For `orders-worker`, metric `container_restarts_total` increased on pod `orders-worker-7` from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and on pod `orders-worker-2` from 0 at 13:20:00Z to 10 at 14:25:00Z; pod `orders-worker-2` stayed at 0 through 13:50:00Z and then rose to 3 by 13:55:00Z. Returned metric data ends at 14:25:00Z although the requested window extended to 14:30:00Z.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a Kubernetes BackOff on pod/orders-worker-7 at 2026-08-21T13:17:52Z with message 'Back-off restarting failed container orders-worker (exit code 1)'. This event occurs just before the estimated 13:20 onset.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a second Kubernetes BackOff on pod/orders-worker-2 at 2026-08-21T13:52:15Z with message 'Back-off restarting failed container orders-worker (exit code 1)'.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "get_traces for orders-worker with status=error from 2026-08-21T13:20:00Z onward returned zero traces; quality flagged empty with note 'no results returned'.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "`get_traces` for `orders-worker` with `status:error` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 traces (`empty: true`) in call-0019, while a second trace query over the same window without a status filter returned 1 trace in call-0037, so the trace source was not globally empty for `orders-worker` in this window.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "A service-specific change-history query for notification-svc over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+            "evidence_ids": [
+              "E28"
+            ]
+          }
+        ],
+        "assumptions": [
+          "orders-worker treats downstream call failure as fatal"
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H3",
+        "statement": "kafka has a partition-specific lag or consumer-group issue affecting some orders-worker consumption paths, so orders assigned to affected partitions remain in Processing and their confirmation emails are delayed or never sent.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E5",
+          "E14",
+          "E16",
+          "E21",
+          "E13",
+          "E15",
+          "E17",
+          "E18",
+          "E19",
+          "E24",
+          "E25",
+          "E26",
+          "E30",
+          "E31"
+        ],
+        "contradicting_evidence": [
+          "E15",
+          "E25",
+          "E26",
+          "E19",
+          "E27"
+        ],
+        "facts": [
+          {
+            "text": "Alerts in the incident window show KafkaUnderReplicatedPartitions firing on entity kafka/broker-2 at 2026-08-21T13:31:00Z with summary '14 under-replicated partitions', then resolving at 2026-08-21T13:38:00Z with summary '0 under-replicated partitions'.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Kafka had a brief broker health event on broker-2: under-replicated partitions fired at 13:31 with 14 partitions and resolved by 13:38. Metrics show the same transient spike (14 at 13:30, 9 at 13:35, back to 0 by 13:40). However, lag on partition 7 was already growing before this event and continued increasing long after it resolved, so the replication alert does not fully explain the ongoing stuck orders.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "Alert history in the incident window shows only a kafka warning on broker-2 for under-replicated partitions from 13:31 to 13:38, with no alerts for notification-svc, orders-worker, or orders-db in the same window.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends on notification-svc and orders-db. The deployment note says it uses static assignment where pod orders-worker-N consumes partition N, so a problem in a specific worker pod can isolate to its assigned partition rather than causing a full outage.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "No orders-worker alerts fired in the incident window, and no error traces containing orders-worker were returned. Given the simultaneous evidence of rising partition-specific lag and repeated restarts, the empty alert/trace results suggest observability gaps or missed instrumentation for this failure mode rather than evidence against it.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends directly on orders-db and notification-svc; it runs as a 12-pod StatefulSet with static partition assignment (orders-worker-N consumes partition N) and no dead-letter queue, so failures can affect only a subset of orders tied to specific pods/partitions or downstream calls on the processing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "Change history for 2026-08-21T11:20:00Z..14:30:00Z returned an infra change at 2026-08-21T13:28:00Z for kafka: 'Planned rolling restart of broker 2 (JVM patch)'.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a Kubernetes BackOff on pod/orders-worker-7 at 2026-08-21T13:17:52Z with message 'Back-off restarting failed container orders-worker (exit code 1)'. This event occurs just before the estimated 13:20 onset.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a second Kubernetes BackOff on pod/orders-worker-2 at 2026-08-21T13:52:15Z with message 'Back-off restarting failed container orders-worker (exit code 1)'.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Past-incident search returned PIR-2026-061 dated 2026-07-30 titled 'Order processing lag during Kafka maintenance' with summary 'Consumer lag rose on several partitions during a broker restart; recovered after 12 minutes' and root cause 'Leader elections during rolling restart.'",
+            "evidence_ids": [
+              "E30"
+            ]
+          },
+          {
+            "text": "Runbook search returned runbook rb-consumer-lag titled 'Kafka consumer lag'; its body says, 'If a single consumer is crash-looping, inspect its logs for the failing offset.'",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a Kubernetes BackOff on pod/orders-worker-7 at 2026-08-21T13:17:52Z with message 'Back-off restarting failed container orders-worker (exit code 1)'. This event occurs just before the estimated 13:20 onset.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a second Kubernetes BackOff on pod/orders-worker-2 at 2026-08-21T13:52:15Z with message 'Back-off restarting failed container orders-worker (exit code 1)'.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "A service-specific change-history query for orders-worker over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+            "evidence_ids": [
+              "E27"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 5,
+        "hypothesis_id": "H4",
+        "statement": "orders-db is intermittently failing or timing out on the final order-state update path, so orders-worker cannot persist completion for some orders and the email step is not reached or is rolled back.",
+        "status": "refuted",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E18",
+          "E19"
+        ],
+        "contradicting_evidence": [
+          "E14",
+          "E15",
+          "E1",
+          "E9",
+          "E19",
+          "E11",
+          "E4",
+          "E8",
+          "E29"
+        ],
+        "facts": [
+          {
+            "text": "Topology shows orders-worker consumes from kafka and depends directly on orders-db and notification-svc; it runs as a 12-pod StatefulSet with static partition assignment (orders-worker-N consumes partition N) and no dead-letter queue, so failures can affect only a subset of orders tied to specific pods/partitions or downstream calls on the processing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "orders-worker metrics returned only container_restarts_total by pod. Pod orders-worker-7 increased from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and pod orders-worker-2 increased from 0 at 2026-08-21T13:20:00Z to 10 at 2026-08-21T14:25:00Z; returned data ends at 14:25 though the requested window extended to 14:30.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "For `orders-worker`, metric `container_restarts_total` increased on pod `orders-worker-7` from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and on pod `orders-worker-2` from 0 at 13:20:00Z to 10 at 14:25:00Z; pod `orders-worker-2` stayed at 0 through 13:50:00Z and then rose to 3 by 13:55:00Z. Returned metric data ends at 14:25:00Z although the requested window extended to 14:30:00Z.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "`get_infra_events` for entity matching `orders-db` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 events (`empty: true`).",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "get_traces for orders-worker with status=error from 2026-08-21T13:20:00Z onward returned zero traces; quality flagged empty with note 'no results returned'.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "`get_traces` for `orders-worker` with `status:error` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 traces (`empty: true`) in call-0019, while a second trace query over the same window without a status filter returned 1 trace in call-0037, so the trace source was not globally empty for `orders-worker` in this window.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "A service-specific change-history query for orders-db over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+            "evidence_ids": [
+              "E29"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Temporarily roll back checkout-svc v4.1.0 or suppress emission of the newly added premium-gift-wrap field while the affected partitions are recovered.",
+        "rationale": "The checkout-svc 13:05 deploy is the only application change before symptom onset, and the leading hypothesis is that a newly introduced payload variant is triggering the partition-specific worker crashes. Stopping further production of potentially offending messages is the fastest way to limit continued backlog growth while deeper verification happens.",
+        "evidence_ids": [
+          "E23",
+          "E25",
+          "E26",
+          "E14",
+          "E15"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Inspect the earliest unconsumed offsets on order-events partitions 7 and 2, identify any poison messages, and quarantine, replay, or skip them under incident procedure so those consumers can resume and drain backlog.",
+        "rationale": "Impact is isolated to partitions 7 and 2, and the crash-looping pods map directly to those partitions under static assignment. Recovering those specific offsets is the most direct way to restore stuck orders. The runbook for single-consumer lag also points to inspecting the failing offset.",
+        "evidence_ids": [
+          "E14",
+          "E15",
+          "E18",
+          "E31"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Change orders-worker so bad or forward-incompatible OrderPlaced events do not terminate the process: validate input, handle unknown/optional fields safely, record the offending offset, and route unrecoverable messages to a quarantine path instead of crashing.",
+        "rationale": "The confirmed failure mode is repeated process exits on a subset of consumed work. With static assignment and no DLQ, a single bad message can stop an entire partition and strand orders. The worker should fail the message, not the pod.",
+        "evidence_ids": [
+          "E18",
+          "E25",
+          "E26",
+          "E32",
+          "E33"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Add a DLQ/quarantine flow and schema-compatibility controls for OrderPlaced events between checkout-svc and orders-worker, including contract tests in CI/CD for additive field changes.",
+        "rationale": "The incident pattern is consistent with consumer fragility to payload variation, and topology confirms there is currently no DLQ. Even if the exact premium-gift-wrap mechanism is later disproven, schema and message-handling guardrails would prevent a single payload change from blocking a partition again.",
+        "evidence_ids": [
+          "E18",
+          "E23",
+          "E14",
+          "E15"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Add alerts and dashboards for per-partition consumer lag, per-pod restart spikes, and missing worker error telemetry; also ensure crash logs remain searchable during logging maintenance windows.",
+        "rationale": "The operational signal that best matched customer impact was partition-specific lag plus pod restarts, while alerts, traces, and logs were inadequate or unavailable. Earlier detection and preserved crash evidence would have shortened triage materially.",
+        "evidence_ids": [
+          "E14",
+          "E15",
+          "E17",
+          "E6",
+          "E34",
+          "E35",
+          "E36",
+          "E40",
+          "E42",
+          "E43",
+          "E10"
+        ]
+      }
+    ],
+    "missing_data": [
+      "orders-worker crash output or stderr around 2026-08-21T13:17:52Z and 2026-08-21T13:52:15Z to confirm the exact exit mechanism.",
+      "The earliest stuck Kafka records and offsets on order-events partitions 7 and 2, including full OrderPlaced payloads.",
+      "Direct evidence of whether the suspected new premium gift-wrap field was present on the messages that triggered the first crashes.",
+      "Checkout-svc producer telemetry for order-events during the window, to compare produced vs consumed rates and correlate payload variants with affected partitions.",
+      "Notification-svc and orders-db request traces/metrics for affected orders, to confirm whether those downstream steps were never attempted or were attempted and failed.",
+      "Consumer-group rebalance or assignment telemetry to rule out any concurrent assignment anomaly beyond the known static mapping."
+    ],
+    "gaps": [
+      "search_logs {'start': '2026-08-21T13:20:00Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:20:00Z', 'query': 'timeout', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 50} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:20:00Z', 'query': 'notification', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 50} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "Could not inspect orders-worker exceptions, retries, timeouts, or order-attribute clustering in logs because logging searches timed out against logging-es during maintenance.",
+      "Could not determine whether failures occur during message handling, DB update, or notification send from logs/traces because orders-worker error traces were empty and log queries timed out.",
+      "Could not validate notification-svc failure/timeout behavior with metrics because the notification-svc metrics query returned no data.",
+      "Could not validate orders-db failure/timeout behavior with metrics because the orders-db metrics query returned no data.",
+      "search_logs {'start': '2026-08-21T13:20:00Z', 'service': 'orders-db', 'level': 'ERROR', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "Could not quantify or trend the count of orders stuck in `Processing`, or cluster them by creation time / order dimensions, because the `orders-db` metric query returned no series or label breakdowns and there is no direct row-level orders query tool in scope.",
+      "Could not inspect `orders-db` or `orders-worker` logs for order-state update failures or email/notification errors because both `search_logs` queries timed out after 3 attempts with `logging-es search did not complete within 30s (cluster in maintenance)`.",
+      "I could not directly verify consumer-group rebalance events because no explicit rebalance metric or alert was available in the returned kafka/orders-worker telemetry.",
+      "I could not verify publisher-side checkout throughput into kafka: query_metrics for checkout-svc returned empty results, so I could not compare produced-vs-consumed rates or rule out missing producer telemetry.",
+      "I could not inspect per-message failures on the lagging partitions from traces because get_traces for orders-worker errors returned no data.",
+      "Could not measure request volume, latency, or timeout/error rate specifically between orders-worker and notification-svc: notification-svc metrics were empty and trace queries for both services returned no spans in the requested window.",
+      "Could not determine from available telemetry whether notification attempts were absent versus failing after orders were marked Processing.",
+      "No service-level health signal was available here for orders-db beyond topology membership; only kafka had an alert in-window.",
+      "Could not query additional infra events for notification-svc, kafka brokers, or orders-db within the incident window because the final planned tool call failed with budget_exhausted.",
+      "Could not drill into consumer-setting changes, feature flags, migrations, or secrets for kafka beyond the single kafka infra change because tool-call allowance was exhausted.",
+      "No direct change-history evidence was collected for schema migrations or consumer-group setting changes affecting orders-worker or orders-db beyond the empty per-service change queries.",
+      "search_logs {'start': '2026-08-21T13:16:00Z', 'end': '2026-08-21T13:19:30Z', 'query': 'panic', 'service': 'orders-worker', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:16:00Z', 'end': '2026-08-21T13:19:30Z', 'query': 'unknown field', 'service': 'orders-worker', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:51:00Z', 'end': '2026-08-21T13:54:30Z', 'query': 'panic', 'service': 'orders-worker', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:51:00Z', 'end': '2026-08-21T13:54:30Z', 'query': 'unknown field', 'service': 'orders-worker', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:17:40Z', 'end': '2026-08-21T13:18:10Z', 'query': 'orders-worker-7', 'service': 'orders-worker', 'limit': 5} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:52:05Z', 'end': '2026-08-21T13:52:35Z', 'query': 'orders-worker-2', 'service': 'orders-worker', 'limit': 5} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "Could not confirm or refute H5's proposed deserialisation panic text (`panic`, `unknown field`, or similar crash output) because every targeted `orders-worker` log search timed out against `logging-es` during cluster maintenance.",
+      "Could not inspect whether the failing log lines mention the specific added field (for example premium gift-wrap) or an offending Kafka offset/partition, because no `orders-worker` log results were returned in either crash window.",
+      "I could not fetch an OrderPlaced event from topic order-events partition 7 at the earliest unprocessed offset or just before the first crash, because the available toolset in this task has no Kafka message/offset inspection capability and the Kafka trace data did not include message payload fields.",
+      "I could not verify whether premiumGiftWrap/premium_gift_wrap was present on the suspected bad partition-7 message; the only Kafka trace returned was for partition 5 and exposed only partition metadata, not the event JSON body.",
+      "search_logs {'start': '2026-08-21T13:17:45Z', 'end': '2026-08-21T13:18:00Z', 'query': 'orders-worker-7.*(premiumGiftWrap|premium_gift_wrap|unknown field|panic|deserial|json)', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 5} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:52:08Z', 'end': '2026-08-21T13:52:22Z', 'query': 'orders-worker-2.*(premiumGiftWrap|premium_gift_wrap|unknown field|panic|deserial|json)', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 5} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "I could not retrieve crash output from the first failing `orders-worker-7` and `orders-worker-2` pods because even ultra-narrow targeted log searches continued to time out against `logging-es` during cluster maintenance.",
+      "Available infra events only exposed Kubernetes `BackOff` / `exit code 1` records, not the container's stderr/stdout or panic text, so I could not confirm whether the process panicked on an unknown JSON field such as `premiumGiftWrap` or `premium_gift_wrap`.",
+      "search_logs {'start': '2026-08-21T13:05:00Z', 'end': '2026-08-21T14:30:00Z', 'query': 'premium', 'service': 'orders-worker', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:05:00Z', 'end': '2026-08-21T14:30:00Z', 'query': 'gift_wrap', 'service': 'orders-worker', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:05:00Z', 'end': '2026-08-21T14:30:00Z', 'query': 'premiumGiftWrap', 'service': 'orders-worker', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:05:00Z', 'end': '2026-08-21T14:30:00Z', 'query': 'unknown field', 'service': 'orders-worker', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:05:00Z', 'end': '2026-08-21T14:30:00Z', 'query': 'panic', 'service': 'orders-worker', 'limit': 100} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "Could not confirm or refute H5 from orders-worker logs for the full 2026-08-21T13:05:00Z..14:30:00Z window because every substring-targeted search (`premium`, `gift_wrap`, `premiumGiftWrap`, `unknown field`, `panic`) timed out against logging-es during cluster maintenance.",
+      "No orders-worker log lines were returned, so I could not determine whether any schema-related errors referenced the suspected field name, an unknown JSON field, a panic, or a specific pod/partition/offset."
+    ],
+    "security_findings": [],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "orders-worker metrics returned only container_restarts_total by pod. Pod orders-worker-7 increased from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and pod orders-worker-2 increased from 0 at 2026-08-21T13:20:00Z to 10 at 2026-08-21T14:25:00Z; returned data ends at 14:25 though the requested window extended to 14:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "A metrics query for notification-svc from 2026-08-21T13:20:00Z onward returned no series and no available_series; quality flagged empty with note 'no results returned'.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "A metrics query for orders-db from 2026-08-21T13:20:00Z onward returned no series and no available_series; quality flagged empty with note 'no results returned'.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "get_traces for orders-worker with status=error from 2026-08-21T13:20:00Z onward returned zero traces; quality flagged empty with note 'no results returned'.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Alerts in the incident window show KafkaUnderReplicatedPartitions firing on entity kafka/broker-2 at 2026-08-21T13:31:00Z with summary '14 under-replicated partitions', then resolving at 2026-08-21T13:38:00Z with summary '0 under-replicated partitions'.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "orders-worker log searches could not be retrieved: an ERROR-level search with no query and later ERROR-level searches for 'timeout' and 'notification' each failed after 3 attempts with ReadTimeout 'logging-es search did not complete within 30s (cluster in maintenance)'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0023",
+          "call-0038",
+          "call-0039"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "`query_metrics` for service `orders-db` over 2026-08-21T13:20:00Z..14:30:00Z returned no series and no `available_series` (`empty: true`), so this query produced no metric-based count or dimension breakdown for orders in that window.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "`get_traces` for `orders-worker` with `status:error` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 traces (`empty: true`) in call-0019, while a second trace query over the same window without a status filter returned 1 trace in call-0037, so the trace source was not globally empty for `orders-worker` in this window.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0019",
+          "call-0037"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "For `orders-worker`, metric `container_restarts_total` increased on pod `orders-worker-7` from 3 at 2026-08-21T13:20:00Z to 17 at 2026-08-21T14:25:00Z, and on pod `orders-worker-2` from 0 at 13:20:00Z to 10 at 14:25:00Z; pod `orders-worker-2` stayed at 0 through 13:50:00Z and then rose to 3 by 13:55:00Z. Returned metric data ends at 14:25:00Z although the requested window extended to 14:30:00Z.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0032"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "`get_alerts` for `orders-worker` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 alerts (`empty: true`).",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0033"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "`get_infra_events` for entity matching `orders-db` over 2026-08-21T13:20:00Z..14:30:00Z returned 0 events (`empty: true`).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0034"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "One `orders-worker` trace was present during the incident window: trace `t-c08-produce-3` started at 2026-08-21T13:40:10Z and showed `checkout-svc` `POST /checkout` status `ok`, `kafka` `produce order-events` status `ok` with `partition: 5`, and `orders-worker` `consume OrderPlaced` status `ok` with `partition: 5` and duration 40 ms.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0037"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "Topology shows orders-worker consumes from kafka and depends on notification-svc and orders-db. The deployment note says it uses static assignment where pod orders-worker-N consumes partition N, so a problem in a specific worker pod can isolate to its assigned partition rather than causing a full outage.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Kafka consumer lag is strongly partition-skewed on topic order-events. Partition 7 lags continuously from 14 messages at 13:20 to 730 by 14:25, and partition 2 stays at 0 until 13:55 then grows to 322 by 14:25, while the reported max of other partitions stays near 0-2. This indicates the issue is limited to specific partitions rather than the whole consumer group.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "Orders-worker pod restarts are isolated to the pods that match the lagging partitions under the static assignment scheme. orders-worker-7 is already restarting at 13:20 and rises from 3 restarts to 17 by 14:25; orders-worker-2 begins restarting around 13:55 and rises from 0 to 10 by 14:25. No other orders-worker pod metrics were returned. The restart timing aligns with the affected kafka partitions 7 and 2.",
+        "tools": [
+          "get_topology",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0011",
+          "call-0013",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "Kafka had a brief broker health event on broker-2: under-replicated partitions fired at 13:31 with 14 partitions and resolved by 13:38. Metrics show the same transient spike (14 at 13:30, 9 at 13:35, back to 0 by 13:40). However, lag on partition 7 was already growing before this event and continued increasing long after it resolved, so the replication alert does not fully explain the ongoing stuck orders.",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012",
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "No orders-worker alerts fired in the incident window, and no error traces containing orders-worker were returned. Given the simultaneous evidence of rising partition-specific lag and repeated restarts, the empty alert/trace results suggest observability gaps or missed instrumentation for this failure mode rather than evidence against it.",
+        "tools": [
+          "get_alerts",
+          "get_traces",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0035",
+          "call-0036",
+          "call-0012",
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "Topology shows orders-worker consumes from kafka and depends directly on orders-db and notification-svc; it runs as a 12-pod StatefulSet with static partition assignment (orders-worker-N consumes partition N) and no dead-letter queue, so failures can affect only a subset of orders tied to specific pods/partitions or downstream calls on the processing path.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "orders-worker metrics since 13:20 show repeated container restarts on pod orders-worker-7 throughout the incident window (counter rising from 3 at 13:20 to 17 at 14:25) and on pod orders-worker-2 starting at 13:55 (0 to 10 by 14:25), while no aggregate request/latency/error metrics were returned. The restarts are partial rather than fleet-wide, consistent with a subset-only processing problem.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "No metrics were returned for notification-svc for the incident window; the result was empty rather than showing normal request volume, latency, or errors. This means I could not verify from metrics whether orders-worker notification attempts were present and succeeding, absent, or failing.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "Alert history in the incident window shows only a kafka warning on broker-2 for under-replicated partitions from 13:31 to 13:38, with no alerts for notification-svc, orders-worker, or orders-db in the same window.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "Trace queries returned no error traces for orders-worker and no ok or error traces for notification-svc during the incident window, so trace data does not show notification requests failing; however, because all these trace queries were empty, this is a telemetry gap rather than evidence that notification-svc was healthy or unused.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0030",
+          "call-0031"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "Change history for 2026-08-21T11:20:00Z..14:30:00Z returned a deploy at 2026-08-21T13:05:00Z for checkout-svc: 'checkout-svc v4.0.3 -> v4.1.0: premium gift wrap option'. This is the only application deploy shown before symptom onset in the broad change query.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0002"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "Change history for 2026-08-21T11:20:00Z..14:30:00Z returned an infra change at 2026-08-21T13:28:00Z for kafka: 'Planned rolling restart of broker 2 (JVM patch)'.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0002",
+          "call-0028"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a Kubernetes BackOff on pod/orders-worker-7 at 2026-08-21T13:17:52Z with message 'Back-off restarting failed container orders-worker (exit code 1)'. This event occurs just before the estimated 13:20 onset.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "Infrastructure events for 2026-08-21T11:20:00Z..14:30:00Z include a second Kubernetes BackOff on pod/orders-worker-2 at 2026-08-21T13:52:15Z with message 'Back-off restarting failed container orders-worker (exit code 1)'.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E27",
+        "summary": "A service-specific change-history query for orders-worker over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0026"
+        ]
+      },
+      {
+        "id": "E28",
+        "summary": "A service-specific change-history query for notification-svc over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0027"
+        ]
+      },
+      {
+        "id": "E29",
+        "summary": "A service-specific change-history query for orders-db over 2026-08-21T11:20:00Z..14:30:00Z returned no changes (quality.empty=true, result_count=0).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0029"
+        ]
+      },
+      {
+        "id": "E30",
+        "summary": "Past-incident search returned PIR-2026-061 dated 2026-07-30 titled 'Order processing lag during Kafka maintenance' with summary 'Consumer lag rose on several partitions during a broker restart; recovered after 12 minutes' and root cause 'Leader elections during rolling restart.'",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E31",
+        "summary": "Runbook search returned runbook rb-consumer-lag titled 'Kafka consumer lag'; its body says, 'If a single consumer is crash-looping, inspect its logs for the failing offset.'",
+        "tools": [
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E32",
+        "summary": "A Kubernetes infra-events query for entity `orders-worker-7` in 2026-08-21T13:16:00Z..13:19:30Z returned one event at 2026-08-21T13:17:52Z: `pod/orders-worker-7` reason `BackOff`, message `Back-off restarting failed container orders-worker (exit code 1)`. Quality reported `result_count: 1`, `empty: false`, and no out-of-range note.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0046"
+        ]
+      },
+      {
+        "id": "E33",
+        "summary": "A Kubernetes infra-events query for entity `orders-worker-2` in 2026-08-21T13:51:00Z..13:54:30Z returned one event at 2026-08-21T13:52:15Z: `pod/orders-worker-2` reason `BackOff`, message `Back-off restarting failed container orders-worker (exit code 1)`. Quality reported `result_count: 1`, `empty: false`, and no out-of-range note.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0047"
+        ]
+      },
+      {
+        "id": "E34",
+        "summary": "Targeted `search_logs` queries on `orders-worker` around the first crash window (2026-08-21T13:16:00Z..13:19:30Z) for substrings `panic` and `unknown field` both failed after 3 attempts with `ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)`, so this task did not retrieve any crash output for that window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0042",
+          "call-0043"
+        ]
+      },
+      {
+        "id": "E35",
+        "summary": "Targeted `search_logs` queries on `orders-worker` around the second crash window (2026-08-21T13:51:00Z..13:54:30Z) for substrings `panic` and `unknown field` both failed after 3 attempts with `ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)`, so this task did not retrieve any crash output for that window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0044",
+          "call-0045"
+        ]
+      },
+      {
+        "id": "E36",
+        "summary": "Two additional very narrow `search_logs` queries on `orders-worker` centered on the pod names `orders-worker-7` (2026-08-21T13:17:40Z..13:18:10Z) and `orders-worker-2` (2026-08-21T13:52:05Z..13:52:35Z) also failed after 3 attempts with the same `ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)`, leaving no pod-specific crash log lines from this task.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0048",
+          "call-0049"
+        ]
+      },
+      {
+        "id": "E37",
+        "summary": "A targeted trace query for service kafka around the first orders-worker-7 crash window (2026-08-21T13:15:00Z..13:18:30Z) returned zero traces, so no Kafka produce/consume record was available there to inspect for a partition-7 message or its payload fields.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0040"
+        ]
+      },
+      {
+        "id": "E38",
+        "summary": "A broader trace query for service kafka over 2026-08-21T13:20:00Z..14:10:00Z returned only one ok trace at 13:40:10Z on order-events partition 5. Its Kafka span attributes included only partition=5, and the trace did not expose any OrderPlaced payload fields such as premiumGiftWrap or premium_gift_wrap.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0041"
+        ]
+      },
+      {
+        "id": "E39",
+        "summary": "A follow-up Kubernetes infra-events check for `orders-worker-7` and `orders-worker-2` over 2026-08-21T14:25:00Z..15:30:00Z returned no events for either pod, so I did not find later recorded restart timestamps to use as an alternate window for crash-log retrieval after the earlier logging maintenance failures.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0055",
+          "call-0056"
+        ]
+      },
+      {
+        "id": "E40",
+        "summary": "Two new ultra-narrow `orders-worker` log searches centered on the first known crashes\u2014`orders-worker-7` at 2026-08-21T13:17:45Z..13:18:00Z and `orders-worker-2` at 2026-08-21T13:52:08Z..13:52:22Z`\u2014using regexes for the pod name plus suspected deserialisation/panic terms (`premiumGiftWrap|premium_gift_wrap|unknown field|panic|deserial|json`) both failed after 3 attempts with `ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)`. I therefore still could not retrieve crash output confirming an unknown-JSON-field panic.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0057",
+          "call-0058"
+        ]
+      },
+      {
+        "id": "E41",
+        "summary": "Source-unfiltered infra-event queries around the precise crash moments returned only Kubernetes `BackOff` events with `exit code 1` for `pod/orders-worker-7` at 2026-08-21T13:17:52Z and `pod/orders-worker-2` at 2026-08-21T13:52:15Z`; they did not expose any richer termination message, stack trace, or text mentioning `premiumGiftWrap`, `premium_gift_wrap`, `unknown field`, or JSON deserialisation.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0059",
+          "call-0060"
+        ]
+      },
+      {
+        "id": "E42",
+        "summary": "Five independent full-incident-window log searches on `orders-worker` for the substrings `premium`, `gift_wrap`, `premiumGiftWrap`, `unknown field`, and `panic` over 2026-08-21T13:05:00Z..14:30:00Z all failed after 3 attempts with the same `ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)` error, so this task did not retrieve any schema-related crash or deserialisation log lines from `orders-worker` for the whole incident window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0050",
+          "call-0051",
+          "call-0052",
+          "call-0053",
+          "call-0054"
+        ]
+      },
+      {
+        "id": "E43",
+        "summary": "Because the full-window searches timed out even when constrained to specific candidate substrings, the `orders-worker` log source remained unavailable for confirming or refuting whether crash output mentioned the suspected new premium-gift-wrap field or deserialisation errors during the incident.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0050",
+          "call-0051",
+          "call-0052",
+          "call-0053",
+          "call-0054"
+        ]
+      }
+    ],
+    "stop_reason": "max_tool_calls"
+  },
+  "stop_reason": "max_tool_calls",
+  "usage": {
+    "llm_calls": 35,
+    "input_tokens": 223249,
+    "output_tokens": 37534,
+    "cache_read_tokens": 96768,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 22238,
+    "cost_usd": 0.821572,
+    "unpriced_calls": 0,
+    "tool_calls": 60,
+    "latency_ms": 491275.84
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 785,
+      "output_tokens": 2634,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1872,
+      "cost_usd": 0.041473,
+      "unpriced_calls": 0,
+      "tool_calls": 1,
+      "latency_ms": 31777.78
+    },
+    "observability": {
+      "llm_calls": 17,
+      "input_tokens": 127902,
+      "output_tokens": 15282,
+      "cache_read_tokens": 68608,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 9131,
+      "cost_usd": 0.394617,
+      "unpriced_calls": 0,
+      "tool_calls": 35,
+      "latency_ms": 199370.56
+    },
+    "dependency": {
+      "llm_calls": 9,
+      "input_tokens": 49906,
+      "output_tokens": 4876,
+      "cache_read_tokens": 25088,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1942,
+      "cost_usd": 0.141458,
+      "unpriced_calls": 0,
+      "tool_calls": 16,
+      "latency_ms": 76454.76
+    },
+    "change_history": {
+      "llm_calls": 3,
+      "input_tokens": 9101,
+      "output_tokens": 2541,
+      "cache_read_tokens": 3072,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1038,
+      "cost_usd": 0.053956,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 31393.46
+    },
+    "reasoning": {
+      "llm_calls": 2,
+      "input_tokens": 13233,
+      "output_tokens": 5972,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3648,
+      "cost_usd": 0.074242,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 72099.6
+    },
+    "critic": {
+      "llm_calls": 2,
+      "input_tokens": 13823,
+      "output_tokens": 3786,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3200,
+      "cost_usd": 0.057934,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 46810.01
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 8499,
+      "output_tokens": 2443,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1407,
+      "cost_usd": 0.057892,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 33369.67
+    }
+  },
+  "by_model": {
+    "gpt-5.4-2026-03-05": {
+      "llm_calls": 31,
+      "input_tokens": 196193,
+      "output_tokens": 27776,
+      "cache_read_tokens": 96768,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 15390,
+      "cost_usd": 0.689396,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 372366.23
+    },
+    "o3-2025-04-16": {
+      "llm_calls": 4,
+      "input_tokens": 27056,
+      "output_tokens": 9758,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 6848,
+      "cost_usd": 0.132176,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 118909.61
+    }
+  },
+  "tool_calls": 60,
+  "latency_s": 331.173,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T11:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T11:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "orders processing confirmation email kafka consumer lag notification timeout db finalization"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "orders-worker notification-svc kafka orders-db consumer lag processing email"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "get_topology",
+      "args": {
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "notification-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-21T13:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_topology",
+      "args": {
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "kafka"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-21T13:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-db",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "notification-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "status": "error",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-21T13:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T11:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T11:20:00Z",
+        "service": "notification-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T11:20:00Z",
+        "service": "kafka"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T11:20:00Z",
+        "service": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "notification-svc",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0031",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "notification-svc",
+        "status": "ok",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0032",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0033",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0034",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "entity": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0035",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0036",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0037",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "service": "orders-worker",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0038",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "query": "timeout",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 50
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0039",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "query": "notification",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 50
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0040",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:15:00Z",
+        "end": "2026-08-21T13:18:30Z",
+        "service": "kafka",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0041",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:20:00Z",
+        "end": "2026-08-21T14:10:00Z",
+        "service": "kafka",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0042",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:16:00Z",
+        "end": "2026-08-21T13:19:30Z",
+        "query": "panic",
+        "service": "orders-worker",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0043",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:16:00Z",
+        "end": "2026-08-21T13:19:30Z",
+        "query": "unknown field",
+        "service": "orders-worker",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0044",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:51:00Z",
+        "end": "2026-08-21T13:54:30Z",
+        "query": "panic",
+        "service": "orders-worker",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0045",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:51:00Z",
+        "end": "2026-08-21T13:54:30Z",
+        "query": "unknown field",
+        "service": "orders-worker",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0046",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:16:00Z",
+        "end": "2026-08-21T13:19:30Z",
+        "entity": "orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0047",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:51:00Z",
+        "end": "2026-08-21T13:54:30Z",
+        "entity": "orders-worker-2",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0048",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:17:40Z",
+        "end": "2026-08-21T13:18:10Z",
+        "query": "orders-worker-7",
+        "service": "orders-worker",
+        "limit": 5
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0049",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:52:05Z",
+        "end": "2026-08-21T13:52:35Z",
+        "query": "orders-worker-2",
+        "service": "orders-worker",
+        "limit": 5
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0050",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:05:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "query": "premium",
+        "service": "orders-worker",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0051",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:05:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "query": "gift_wrap",
+        "service": "orders-worker",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0052",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:05:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "query": "premiumGiftWrap",
+        "service": "orders-worker",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0053",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:05:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "query": "unknown field",
+        "service": "orders-worker",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0054",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:05:00Z",
+        "end": "2026-08-21T14:30:00Z",
+        "query": "panic",
+        "service": "orders-worker",
+        "limit": 100
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0055",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T14:25:00Z",
+        "end": "2026-08-21T15:30:00Z",
+        "entity": "orders-worker-7",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0056",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T14:25:00Z",
+        "end": "2026-08-21T15:30:00Z",
+        "entity": "orders-worker-2",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0057",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:17:45Z",
+        "end": "2026-08-21T13:18:00Z",
+        "query": "orders-worker-7.*(premiumGiftWrap|premium_gift_wrap|unknown field|panic|deserial|json)",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 5
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0058",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:52:08Z",
+        "end": "2026-08-21T13:52:22Z",
+        "query": "orders-worker-2.*(premiumGiftWrap|premium_gift_wrap|unknown field|panic|deserial|json)",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 5
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3
+    },
+    {
+      "call_id": "call-0059",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:17:30Z",
+        "end": "2026-08-21T13:18:10Z",
+        "entity": "orders-worker-7"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0060",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:52:00Z",
+        "end": "2026-08-21T13:52:30Z",
+        "entity": "orders-worker-2"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    }
+  ]
+}

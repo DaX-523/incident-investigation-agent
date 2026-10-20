@@ -1,0 +1,1480 @@
+{
+  "scenario": "inc-007",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Card payments failing with 'Payment method could not be verified'",
+    "outcome": "conclusive",
+    "summary": "Card payments fail because payments-svc pods are still using the PSP API key pk_live_..A7, which was revoked at the PSP at 07:00:30Z by the automated rotate-psp-keys job. The job replaced it with pk_live_..C2 at 06:58Z and was configured with revoke_previous_immediately=true, so there was no overlap window. Pods that still hold A7 get 401 invalid_api_key from the PSP, which payments-svc maps to PAYMENT_METHOD_UNVERIFIED. The one pod that loaded C2 (created by an HPA scale-up at 09:08Z) authorizes successfully. UPI and wallets run on a separate provider and are unaffected. The card form deploy (web-frontend v8.2.0, 06:45Z) is not the cause: card errors begin after the key revocation, not at the deploy. The failure is not visible in 5xx or healthz metrics, which is why the dashboard looks healthy.",
+    "root_cause": "Automated PSP key rotation (vault rotate-psp-keys, configured 2026-05-25 with revoke_previous_immediately=true) revoked the previous live key pk_live_..A7 at the PSP at 07:00:30Z while payments-svc pods were still running with it. Pods did not reload the new key pk_live_..C2 from vault, so their PSP authorize calls were rejected with 401 invalid_api_key.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "The PSP key rotation revoked key A7 immediately while payments-svc pods still held A7 in memory. Card authorizations fail with 401 invalid_api_key. Only pods that loaded C2 succeed.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6"
+        ],
+        "contradicting_evidence": [
+          "E7"
+        ],
+        "facts": [
+          {
+            "text": "Vault change: rotate-psp-keys set revoke_previous_immediately=true on 2026-05-25 10:00Z (security-team).",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Secret change at 06:58Z: new key C2 created; previous key A7 revoked at PSP at 07:00:30Z.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "payments-svc logs 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED at 07:00:41Z (pod a) and 07:02:13Z (pod b), the first errors after the revocation.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Pod payments-svc-7d9-n loaded C2 at 09:08:20Z and logged 'psp authorize ok' at 09:10:05Z. Pod payments-svc-7d9-c still rejected A7 at 09:10:09Z.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "card_auth_success_rate: 0.97 at 06:50Z, 0.55 at 07:00Z, 0.0 from 07:10Z to 09:10Z, 0.25 at 09:20Z and 09:30Z (matches 1 healthy pod of 4).",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "http_4xx_rate jumped from about 1.2% to 18% at 07:00Z and about 32% from 07:10Z. http_5xx_rate stayed flat at 0.1%. healthz_success stayed 100%.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "Pod-level card success breakdown could not be retrieved (no pod label series), and vault and trace data returned nothing, so the per-pod A7/C2 mapping rests on log lines only.",
+            "evidence_ids": [
+              "E7"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "The reporter's hypothesis: the card form redesign (web-frontend v8.2.0, deployed 06:45Z) broke card payments. Refuted.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E8",
+          "E9"
+        ],
+        "facts": [
+          {
+            "text": "web-frontend v8.2.0 deployed at 06:45:30Z, but card 4xx was about 1.2-1.3% from 06:30 to 06:50Z and only rose at 07:00Z, after the key revocation at 07:00:30Z.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "web-frontend logs show no errors after the deploy. The failure is a PSP 401 with a specific key_id, which is server-side, not a form or client problem.",
+            "evidence_ids": [
+              "E9"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "The PSP (external provider) had an outage or rejected valid requests. Refuted.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E10",
+          "E11"
+        ],
+        "facts": [
+          {
+            "text": "PSP status page at 09:00Z: 'All systems operational. No incidents reported today.'",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "The rejections cite our revoked key_id A7, and pod n authorizes successfully with C2 at 09:10:05Z while the PSP is up.",
+            "evidence_ids": [
+              "E11"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "Capacity or HPA scale-up caused the failures. Refuted.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E12"
+        ],
+        "facts": [
+          {
+            "text": "replicas stayed at 3 until 09:20Z. The 07:00Z failure started with no scaling event.",
+            "evidence_ids": [
+              "E12"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Roll-restart all payments-svc pods (or force a credential reload) so every pod loads pk_live_..C2 from vault. Confirm each pod logs 'loaded PSP credentials ... key_id=pk_live_..C2' and that card_auth_success_rate returns to about 0.97 across all pods. Do not re-enable the revoked A7 key.",
+        "rationale": "Pods that hold A7 are the only failing path. Restarting them should restore card authorization within minutes. This is the fastest mitigation and needs no code change.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E8",
+          "E9",
+          "E11",
+          "E12"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Until all pods are on C2, drain or route card traffic away from pods still using A7 (or lower the HPA floor only if it is safe). Tell support that card payments are down for about 2.5 hours and that UPI/wallets are working. Consider a customer notice and a temporary message on the card form.",
+        "rationale": "Limits customer impact while pods roll. Support has been reporting failures since early morning.",
+        "evidence_ids": [
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E8",
+          "E9",
+          "E11",
+          "E12"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Revert revoke_previous_immediately=true in the rotate-psp-keys job. Restore an overlap window: keep the previous PSP key valid until every consumer has confirmed it runs the new key, then revoke it in a separate step.",
+        "rationale": "The immediate revocation is the direct trigger. The security hardening change made the rotation break consumers that hold the old key.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E8"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Make payments-svc reload PSP credentials when vault changes (watch or periodic refresh) and retry with the new key on 401 invalid_api_key. Add a rotation runbook that requires a rolling restart or reload of every consumer before old keys are revoked.",
+        "rationale": "Stale in-memory credentials are the root mechanism. No runbook exists for this today, so this gap should be documented.",
+        "evidence_ids": [
+          "E3",
+          "E4",
+          "E9",
+          "E11"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Page on card_auth_success_rate drop and on PSP 401 invalid_api_key counts, instead of routing SyntheticCardCheckoutFailing to email only. Make /healthz reflect PSP authorization health, because it stayed at 100% during a total card outage.",
+        "rationale": "The synthetic alert fired at 07:04Z but went to email only, and healthz and 5xx stayed green, so the outage went unnoticed for about 2 hours.",
+        "evidence_ids": [
+          "E5",
+          "E6",
+          "E8",
+          "E12"
+        ]
+      }
+    ],
+    "missing_data": [
+      "No vault audit or rotation job logs (vault log search returned nothing), so the exact rotation sequence and which consumers the job checked are unknown.",
+      "No pod-level card success metrics (pod label query returned no series). Pod-to-key mapping relies on log lines only.",
+      "Traces for payments-svc returned no error spans, so end-to-end traces could not confirm the failure path.",
+      "No pod restart history. The claim that pods a, b and c started before the rotation is inferred from their continued use of A7, not directly observed.",
+      "Log search for the exact text 'could not be verified' returned nothing. The code appears only as PAYMENT_METHOD_UNVERIFIED in the message.",
+      "No runbook or past incident covering PSP key rotation.",
+      "Whether payments-svc reloads credentials on change is not shown in any tool output; this is an assumption based on pods holding A7 for over 2 hours."
+    ],
+    "gaps": [
+      "get_external_report {'name': 'vendor status'} failed: not_found: no report named 'vendor status'; available: ['psp_status_page']"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Was the PSP's revocation of pk_live_..A7 at 07:00:30Z intended? If so, the old key should not have been revoked while consumers still used it.",
+      "Who owns payments-svc credential loading? Does it read vault only at startup?",
+      "Why did SyntheticCardCheckoutFailing route to email only at SEV2 severity? Should it page?",
+      "Has customer-facing comms gone out about the card outage since about 07:00Z?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "Vault change: rotate-psp-keys set revoke_previous_immediately=true on 2026-05-25 10:00Z (security-team).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0002"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "Secret change at 06:58Z: new key C2 created; previous key A7 revoked at PSP at 07:00:30Z.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0002"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "payments-svc logs 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED at 07:00:41Z (pod a) and 07:02:13Z (pod b), the first errors after the revocation.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0006",
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Pod payments-svc-7d9-n loaded C2 at 09:08:20Z and logged 'psp authorize ok' at 09:10:05Z. Pod payments-svc-7d9-c still rejected A7 at 09:10:09Z.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "card_auth_success_rate: 0.97 at 06:50Z, 0.55 at 07:00Z, 0.0 from 07:10Z to 09:10Z, 0.25 at 09:20Z and 09:30Z (matches 1 healthy pod of 4).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "http_4xx_rate jumped from about 1.2% to 18% at 07:00Z and about 32% from 07:10Z. http_5xx_rate stayed flat at 0.1%. healthz_success stayed 100%.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "Pod-level card success breakdown could not be retrieved (no pod label series), and vault and trace data returned nothing, so the per-pod A7/C2 mapping rests on log lines only.",
+        "tools": [
+          "get_traces",
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0017",
+          "call-0008",
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "web-frontend v8.2.0 deployed at 06:45:30Z, but card 4xx was about 1.2-1.3% from 06:30 to 06:50Z and only rose at 07:00Z, after the key revocation at 07:00:30Z.",
+        "tools": [
+          "get_changes",
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0007",
+          "call-0002"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "web-frontend logs show no errors after the deploy. The failure is a PSP 401 with a specific key_id, which is server-side, not a form or client problem.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "PSP status page at 09:00Z: 'All systems operational. No incidents reported today.'",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "The rejections cite our revoked key_id A7, and pod n authorizes successfully with C2 at 09:10:05Z while the PSP is up.",
+        "tools": [
+          "get_external_report",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "replicas stayed at 3 until 09:20Z. The 07:00Z failure started with no scaling event.",
+        "tools": [
+          "get_infra_events",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0011"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 7,
+    "input_tokens": 100008,
+    "output_tokens": 8206,
+    "cache_read_tokens": 79927,
+    "cache_write_tokens": 20065,
+    "reasoning_tokens": 2649,
+    "cost_usd": 0.007413,
+    "unpriced_calls": 0,
+    "tool_calls": 20,
+    "latency_ms": 41089.28
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 7,
+      "input_tokens": 100008,
+      "output_tokens": 8206,
+      "cache_read_tokens": 79927,
+      "cache_write_tokens": 20065,
+      "reasoning_tokens": 2649,
+      "cost_usd": 0.007413,
+      "unpriced_calls": 0,
+      "tool_calls": 20,
+      "latency_ms": 41089.28
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 7,
+      "input_tokens": 100008,
+      "output_tokens": 8206,
+      "cache_read_tokens": 79927,
+      "cache_write_tokens": 20065,
+      "reasoning_tokens": 2649,
+      "cost_usd": 0.007413,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 41089.28
+    }
+  },
+  "tool_calls": 20,
+  "latency_s": 41.124,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "web-frontend",
+            "kind": "web",
+            "depends_on": [
+              "payments-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "payments-svc",
+            "kind": "service",
+            "depends_on": [
+              "psp-gateway",
+              "vault"
+            ],
+            "notes": "Calls the PSP for card authorization; UPI/wallet via a separate provider. Health check GET /healthz."
+          },
+          {
+            "name": "psp-gateway",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "card payment service provider"
+          },
+          {
+            "name": "vault",
+            "kind": "secrets_manager",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-05-25T10:00:00Z",
+            "kind": "config",
+            "service": "vault",
+            "summary": "rotate-psp-keys job: set revoke_previous_immediately=true (security hardening)",
+            "author": "security-team",
+            "details": null
+          },
+          {
+            "ts": "2026-05-27T06:45:00Z",
+            "kind": "deploy",
+            "service": "web-frontend",
+            "summary": "web-frontend v8.2.0 (card form restyle)",
+            "author": "web-team",
+            "details": null
+          },
+          {
+            "ts": "2026-05-27T06:58:00Z",
+            "kind": "secret",
+            "service": "vault",
+            "summary": "rotate-psp-keys: new key pk_live_..C2 created; previous key pk_live_..A7 revoked at PSP (07:00:30)",
+            "author": "cron",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_alerts",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-05-27T07:04:00Z",
+            "name": "SyntheticCardCheckoutFailing",
+            "severity": "warning",
+            "entity": "synthetic/card-checkout",
+            "state": "firing",
+            "summary": "Synthetic card checkout journey failing (routed to email only)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_logs",
+      "args": {
+        "query": "could not be verified",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-05-27T06:00:00Z",
+        "end": "2026-05-27T09:40:00Z",
+        "service": "payments-svc",
+        "level": "DEBUG",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-05-27T07:00:41Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-a"
+            }
+          },
+          {
+            "ts": "2026-05-27T07:02:13Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-b"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:08:20Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "loaded PSP credentials from vault (key_id=pk_live_..C2)",
+            "attrs": {
+              "pod": "payments-svc-7d9-n"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:10:05Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "psp authorize ok",
+            "attrs": {
+              "pod": "payments-svc-7d9-n"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:10:09Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-c"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-05-25T10:00:00Z",
+        "end": "2026-05-27T09:40:00Z",
+        "query": "key|psp|vault|auth|revoke|401|403|unauthorized",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-05-27T07:00:41Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-a"
+            }
+          },
+          {
+            "ts": "2026-05-27T07:02:13Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-b"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:08:20Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "loaded PSP credentials from vault (key_id=pk_live_..C2)",
+            "attrs": {
+              "pod": "payments-svc-7d9-n"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:10:05Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "psp authorize ok",
+            "attrs": {
+              "pod": "payments-svc-7d9-n"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:10:09Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-c"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-05-27T05:00:00Z",
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "payments-svc",
+            "name": "card_auth_success_rate",
+            "unit": "ratio",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-05-27T06:30:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-05-27T06:40:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-05-27T06:50:00Z",
+                "value": 0.96
+              },
+              {
+                "ts": "2026-05-27T07:00:00Z",
+                "value": 0.55
+              },
+              {
+                "ts": "2026-05-27T07:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T07:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T07:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T07:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T07:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T08:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T08:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T08:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T08:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T08:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T08:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T09:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T09:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-05-27T09:20:00Z",
+                "value": 0.25
+              },
+              {
+                "ts": "2026-05-27T09:30:00Z",
+                "value": 0.25
+              }
+            ]
+          },
+          {
+            "service": "payments-svc",
+            "name": "upi_wallet_success_rate",
+            "unit": "ratio",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-05-27T06:30:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T06:40:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T06:50:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T07:00:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T07:10:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T07:20:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-05-27T07:30:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T07:40:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T07:50:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T08:00:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T08:10:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-05-27T08:20:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T08:30:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T08:40:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T08:50:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T09:00:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-05-27T09:10:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T09:20:00Z",
+                "value": 0.98
+              },
+              {
+                "ts": "2026-05-27T09:30:00Z",
+                "value": 0.98
+              }
+            ]
+          },
+          {
+            "service": "payments-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-05-27T06:30:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T06:40:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T06:50:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T07:00:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T07:10:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T07:20:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T07:30:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T07:40:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T07:50:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T08:00:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T08:10:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T08:20:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T08:30:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T08:40:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T08:50:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T09:00:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T09:10:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T09:20:00Z",
+                "value": 0.1
+              },
+              {
+                "ts": "2026-05-27T09:30:00Z",
+                "value": 0.1
+              }
+            ]
+          },
+          {
+            "service": "payments-svc",
+            "name": "http_4xx_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-05-27T06:30:00Z",
+                "value": 1.2
+              },
+              {
+                "ts": "2026-05-27T06:40:00Z",
+                "value": 1.3
+              },
+              {
+                "ts": "2026-05-27T06:50:00Z",
+                "value": 1.2
+              },
+              {
+                "ts": "2026-05-27T07:00:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-05-27T07:10:00Z",
+                "value": 31.5
+              },
+              {
+                "ts": "2026-05-27T07:20:00Z",
+                "value": 32.0
+              },
+              {
+                "ts": "2026-05-27T07:30:00Z",
+                "value": 31.8
+              },
+              {
+                "ts": "2026-05-27T07:40:00Z",
+                "value": 32.1
+              },
+              {
+                "ts": "2026-05-27T07:50:00Z",
+                "value": 31.9
+              },
+              {
+                "ts": "2026-05-27T08:00:00Z",
+                "value": 32.2
+              },
+              {
+                "ts": "2026-05-27T08:10:00Z",
+                "value": 31.7
+              },
+              {
+                "ts": "2026-05-27T08:20:00Z",
+                "value": 32.0
+              },
+              {
+                "ts": "2026-05-27T08:30:00Z",
+                "value": 31.8
+              },
+              {
+                "ts": "2026-05-27T08:40:00Z",
+                "value": 32.1
+              },
+              {
+                "ts": "2026-05-27T08:50:00Z",
+                "value": 31.9
+              },
+              {
+                "ts": "2026-05-27T09:00:00Z",
+                "value": 32.0
+              },
+              {
+                "ts": "2026-05-27T09:10:00Z",
+                "value": 31.8
+              },
+              {
+                "ts": "2026-05-27T09:20:00Z",
+                "value": 24.1
+              },
+              {
+                "ts": "2026-05-27T09:30:00Z",
+                "value": 24.0
+              }
+            ]
+          },
+          {
+            "service": "payments-svc",
+            "name": "healthz_success",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-05-27T06:30:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T06:40:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T06:50:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T07:00:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T07:10:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T07:20:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T07:30:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T07:40:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T07:50:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T08:00:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T08:10:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T08:20:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T08:30:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T08:40:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T08:50:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T09:00:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T09:10:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T09:20:00Z",
+                "value": 100.0
+              },
+              {
+                "ts": "2026-05-27T09:30:00Z",
+                "value": 100.0
+              }
+            ]
+          },
+          {
+            "service": "payments-svc",
+            "name": "replicas",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-05-27T06:30:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T06:40:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T06:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T07:00:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T07:10:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T07:20:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T07:30:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T07:40:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T07:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T08:00:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T08:10:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T08:20:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T08:30:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T08:40:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T08:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T09:00:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T09:10:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-05-27T09:20:00Z",
+                "value": 4.0
+              },
+              {
+                "ts": "2026-05-27T09:30:00Z",
+                "value": 4.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "card_auth_success_rate",
+            "labels": {}
+          },
+          {
+            "name": "upi_wallet_success_rate",
+            "labels": {}
+          },
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          },
+          {
+            "name": "http_4xx_rate",
+            "labels": {}
+          },
+          {
+            "name": "healthz_success",
+            "labels": {}
+          },
+          {
+            "name": "replicas",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-05-25T10:00:00Z",
+        "end": "2026-05-27T09:40:00Z",
+        "service": "vault",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-05-27T06:30:00Z",
+        "end": "2026-05-27T09:40:00Z",
+        "service": "payments-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-05-27T07:00:41Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-a"
+            }
+          },
+          {
+            "ts": "2026-05-27T07:02:13Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-b"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:08:20Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "loaded PSP credentials from vault (key_id=pk_live_..C2)",
+            "attrs": {
+              "pod": "payments-svc-7d9-n"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:10:05Z",
+            "service": "payments-svc",
+            "level": "INFO",
+            "message": "psp authorize ok",
+            "attrs": {
+              "pod": "payments-svc-7d9-n"
+            }
+          },
+          {
+            "ts": "2026-05-27T09:10:09Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "psp authorize rejected: 401 invalid_api_key (key_id=pk_live_..A7) -> PAYMENT_METHOD_UNVERIFIED",
+            "attrs": {
+              "pod": "payments-svc-7d9-c"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-05-27T06:30:00Z",
+        "end": "2026-05-27T09:40:00Z",
+        "service": "web-frontend",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-05-27T06:45:30Z",
+            "service": "web-frontend",
+            "level": "INFO",
+            "message": "web-frontend v8.2.0 deployed (card form restyle)",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-05-27T06:00:00Z",
+        "end": "2026-05-27T09:40:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-05-27T09:08:00Z",
+            "source": "kubernetes",
+            "entity": "hpa/payments-svc",
+            "reason": "SuccessfulRescale",
+            "message": "New size: 4; reason: cpu resource utilization above target"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "key rotation psp credentials"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_external_report",
+      "args": {
+        "name": "vendor status"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1,
+      "data": null
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "key rotation revoke"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_changes",
+      "args": {
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_external_report",
+      "args": {
+        "name": "psp_status_page"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "psp_status_page",
+            "kind": "vendor_status_page",
+            "generated_at": "2026-05-27T09:00:00Z",
+            "body": "All systems operational. No incidents reported today."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-05-27T06:30:00Z",
+        "service": "payments-svc",
+        "name": "card_auth_success_rate",
+        "labels": {
+          "pod": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": [
+          {
+            "name": "card_auth_success_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-05-27T07:00:00Z",
+        "service": "payments-svc",
+        "status": "error",
+        "limit": 10
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-05-25T00:00:00Z",
+        "kind": "scheduled_job"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-05-25T00:00:00Z",
+        "entity": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-05-27T09:08:00Z",
+            "source": "kubernetes",
+            "entity": "hpa/payments-svc",
+            "reason": "SuccessfulRescale",
+            "message": "New size: 4; reason: cpu resource utilization above target"
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "cost_usd": 0.005507,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report\u2019s rank-1 hypothesis matches the key cause: a checkout-svc v4.1.0 schema/payload change introducing a new premium-gift-wrap field causes orders-worker to fail on decoding and crash-loop on affected messages. It is framed as inconclusive rather than definitive, which aligns with the key\u2019s requirement to treat the cause as the leading hypothesis rather than a confident root-cause statement.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1,
+      2
+    ]
+  }
+}

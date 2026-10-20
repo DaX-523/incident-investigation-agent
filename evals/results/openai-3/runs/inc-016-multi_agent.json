@@ -1,0 +1,2042 @@
+{
+  "scenario": "inc-016",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "openai",
+  "report": {
+    "incident_title": "Partners getting 5xx from the tracking API since ~09:00",
+    "outcome": "conclusive",
+    "summary": "Confirmed facts: partner-facing failures came from tracking-api timing out while acquiring database connections after its DB pool max_size was reduced from 50 to 40 at 08:55, with pool utilisation pinned at 100% and repeated pool-timeout errors from about 09:00 onward (E1, E2, E3, E4, E5, E10, E14). Also confirmed is that tracking-db degradation started earlier, around 08:50, with write IOPS near the provisioned limit, sharply higher query latency, and lock waits (E7, E8, E9, E15, E21, E27). A likely but not fully proven explanation is that a large backfill job started at 08:49 with 16 parallel pods and drove the DB saturation, which then increased connection hold times in tracking-api; the pool reduction materially worsened the impact by leaving no headroom once queries slowed (E26, E28, E35, E41, E2, E7, E8).",
+    "root_cause": "A mis-scheduled data-jobs back-fill (job/backfill-carrier-events) started at 08:49 with 16 parallel pods, wrote heavily to tracking-db, saturated write IOPS, drove query latency and lock waits up from 08:50, which made tracking-api hold DB connections longer; when FinOps simultaneously lowered tracking-api\u2019s pool to 40 connections, the pool hit 100 % utilisation and partners began receiving 5xx errors.",
+    "confidence": "medium",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H5",
+        "statement": "A mis-scheduled data-jobs back-fill (job/backfill-carrier-events) started at 08:49 with 16 parallel pods, wrote heavily to tracking-db, saturated write IOPS, drove query latency and lock waits up from 08:50, which made tracking-api hold DB connections longer; when FinOps simultaneously lowered tracking-api\u2019s pool to 40 connections, the pool hit 100 % utilisation and partners began receiving 5xx errors.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E26",
+          "E28",
+          "E35",
+          "E41",
+          "E7",
+          "E8",
+          "E9",
+          "E15",
+          "E27",
+          "E2",
+          "E3",
+          "E4",
+          "E10",
+          "E12"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "Infrastructure events show `job/backfill-carrier-events` was created in namespace data-jobs at 2026-09-15T08:49:50Z, and at 08:50:06Z Kubernetes reported '16 of 16 pods running' (quality: events query returned 3 events, at_limit false).",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Runbook `rb-data-backfill` states: 'Backfills that write to tracking-db must run between 01:00 and 05:00 UTC with parallelism of 4 or less, and must be announced in the platform channel.' Separately, the observed `job/backfill-carrier-events` was created at 08:49:50Z with parallelism 16 and reached 16/16 pods running at 08:50:06Z.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "A `data-jobs` INFO log at 2026-09-15T08:49:58Z states: `backfill-carrier-events started: 2,000,000 events to re-import, batch_size=5000, parallelism=16`, which is direct evidence that a large, highly parallel backfill was launched immediately before the tracking-db write-IOPS spike window.",
+            "evidence_ids": [
+              "E35"
+            ]
+          },
+          {
+            "text": "Kubernetes infra events for 2026-09-15T08:40:00Z..09:30:00Z show `job/backfill-carrier-events` was created at 08:49:50Z in namespace `data-jobs` by `data-eng` with parallelism 16, and by 08:50:06Z Kubernetes reported `16 of 16 pods running`.",
+            "evidence_ids": [
+              "E41"
+            ]
+          },
+          {
+            "text": "tracking-db aggregate health degraded before the reported 08:55 pool change: query_latency_p99 rose from 8-10 ms at 08:30-08:45 to 140 ms at 08:50, 610 ms at 08:55, and stayed around 950-990 ms from 09:00 onward; lock_waits_per_s rose from 0 to 31 at 08:50 and then ~44-48/s; write_iops rose from ~1.5k to 8.9k at 08:50 and ~9.85k-9.92k from 08:55 onward.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "An RDS infrastructure event for tracking-db fired at 08:58 reporting write IOPS at 98% of the provisioned 10,000 for 5 minutes, corroborating database-side saturation during the incident onset.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "tracking-db emitted a lock-wait warning at 09:05:43: \"process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms\", which is direct evidence of lock contention on the database during the error period.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "tracking-db metrics from 09:00 to 10:25 show query_latency_p99 between 950 and 990 ms, write_iops between 9870 and 9920 against a noted provisioned 10000 write IOPS service, and lock_waits_per_s between 45 and 48 throughout; returned data ends at 10:25 although the requested window ran to 10:30.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "An infrastructure event for `tracking-db` at 2026-09-15T08:58:00Z reported `WriteIOPSHigh` with message 'Write IOPS at 98% of provisioned (10000) for 5 minutes.'",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "tracking-api DB-pool metrics show db_pool_max_size at 50 through 08:50 and 40 starting at 08:55. db_pool_in_use was 31 at 08:50, then 40 at 08:55 and remained 40 through 10:25. db_pool_wait_p99 was 3 ms at 08:50, 420 ms at 08:55, and about 1950-1995 ms from 09:00 through 10:25.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "tracking-api ERROR logs in the requested window contain the exact message \"timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)\" at 09:02:11Z, 09:10:02Z, and 09:21:45Z; affected routes shown were GET /shipments/{id}/events and GET /shipments/{id}.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "One returned tracking-api error trace (trace_id t-c16-fail-1) started at 09:12:05Z, lasted 2006 ms, and contains a GET /shipments/{id}/events span with attrs error=pool_timeout plus a db.pool.acquire span lasting 2000 ms with attrs error=timeout.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "A tracking-api error trace at 09:12:05 failed after spending 2000 ms in db.pool.acquire with error=timeout/pool_timeout; the trace shows the application timing out waiting for a DB connection from its own pool, consistent with the reported partner-facing failures.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Topology shows the failing partner request path is partner-api -> tracking-api, and tracking-api depends on tracking-db and events-queue. The same topology also shows tracking-db is shared by tracking-api, webhook-ingest, and data-jobs, while events-queue is shared by tracking-api and webhook-ingest.",
+            "evidence_ids": [
+              "E12"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The back-fill pods issued sustained high-volume writes to tracking-db (not directly metered).",
+          "No other client introduced a comparable write load in the same window.",
+          "40 DB connections would have been enough had DB latency remained at the pre-08:50 level."
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H1",
+        "statement": "tracking-api had its database connection pool reduced at 08:55 to a size below normal request concurrency, so requests began timing out waiting for a DB connection and returned 500/503 with pool-exhausted errors.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E18",
+          "E19",
+          "E25",
+          "E2",
+          "E1",
+          "E3",
+          "E4",
+          "E5",
+          "E10",
+          "E12",
+          "E14",
+          "E16",
+          "E24",
+          "E13"
+        ],
+        "contradicting_evidence": [
+          "E7",
+          "E8"
+        ],
+        "facts": [
+          {
+            "text": "In the unfiltered change-history query for 2026-09-15 08:30:00Z..09:10:00Z, the only returned change was at 2026-09-15T08:55:00Z: a config change on tracking-api, \"Reduce db.pool.max_size from 50 to 40 (FinOps right-sizing of DB connections)\"; the result count was 1 and the returned range was only that timestamp.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "The tracking-api-specific change query for 08:30:00Z..09:10:00Z returned the same single config change at 2026-09-15T08:55:00Z, with details stating the old value was 50, the new value was 40, the author was platform-finops, and the rationale recorded was \"Peak observed pool usage over the last 14 days was 22 connections.\"",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "A broad change-history query for 2026-09-15T08:30:00Z..09:10:00Z returned exactly one change: at 08:55:00Z, tracking-api config changed `db.pool.max_size` from 50 to 40 by `platform-finops`; no changes for webhook-ingest, data-jobs, or tracking-db were returned in that query (quality: result_count 1, at_limit false, out_of_requested_range false).",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "tracking-api DB-pool metrics show db_pool_max_size at 50 through 08:50 and 40 starting at 08:55. db_pool_in_use was 31 at 08:50, then 40 at 08:55 and remained 40 through 10:25. db_pool_wait_p99 was 3 ms at 08:50, 420 ms at 08:55, and about 1950-1995 ms from 09:00 through 10:25.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "tracking-api aggregate metrics for the requested window returned data from 2026-09-15T08:30:00Z to 2026-09-15T10:25:00Z. request_rate stayed between 417 and 425 rps throughout, while error_rate was 0.2-0.4% through 08:50, rose to 1.1% at 08:55, and then stayed between 11.8% and 13.2% from 09:00 through 10:25.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "tracking-api ERROR logs in the requested window contain the exact message \"timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)\" at 09:02:11Z, 09:10:02Z, and 09:21:45Z; affected routes shown were GET /shipments/{id}/events and GET /shipments/{id}.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "One returned tracking-api error trace (trace_id t-c16-fail-1) started at 09:12:05Z, lasted 2006 ms, and contains a GET /shipments/{id}/events span with attrs error=pool_timeout plus a db.pool.acquire span lasting 2000 ms with attrs error=timeout.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "tracking-api alerts fired at 09:03:00Z and 09:04:00Z: TrackingApi5xxHigh reported \"tracking-api 5xx above 5% for 3 minutes\" and DbPoolSaturated reported \"tracking-api DB pool at 100% utilisation\".",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "A tracking-api error trace at 09:12:05 failed after spending 2000 ms in db.pool.acquire with error=timeout/pool_timeout; the trace shows the application timing out waiting for a DB connection from its own pool, consistent with the reported partner-facing failures.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Topology shows the failing partner request path is partner-api -> tracking-api, and tracking-api depends on tracking-db and events-queue. The same topology also shows tracking-db is shared by tracking-api, webhook-ingest, and data-jobs, while events-queue is shared by tracking-api and webhook-ingest.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "tracking-api metrics from 09:00 to 10:25 show error_rate staying around 11.8% to 13.2% while request_rate stays roughly flat at 417 to 424 rps. In the same period db_pool_in_use is 40.0 at every point, db_pool_max_size is 40.0 at every point, and db_pool_wait_p99 is 1950 to 1995 ms; returned data ends at 10:25 although the requested window ran to 10:30.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "An error trace at 2026-09-15T09:12:05Z for tracking-api GET /shipments/{id}/events lasted 2006 ms and contains only tracking-api spans: a request span with attrs error=pool_timeout and a db.pool.acquire span lasting 2000 ms with attrs error=timeout. No events-queue or tracking-db span appears in that returned trace.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "Past-incident search returned PIR-2026-024, \"billing-api timeouts after connection pool reduction\" (2026-05-20), whose recorded root cause was \"Pool sized below peak concurrency during month-end invoicing\" and resolution was to revert the pool size.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "Alerts in the incident window fired on tracking-api: TrackingApi5xxHigh at 2026-09-15T09:03:00Z and DbPoolSaturated at 2026-09-15T09:04:00Z. No alerts were returned for partner-api, events-queue, tracking-db, webhook-ingest, or data-jobs in this query.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "tracking-db aggregate health degraded before the reported 08:55 pool change: query_latency_p99 rose from 8-10 ms at 08:30-08:45 to 140 ms at 08:50, 610 ms at 08:55, and stayed around 950-990 ms from 09:00 onward; lock_waits_per_s rose from 0 to 31 at 08:50 and then ~44-48/s; write_iops rose from ~1.5k to 8.9k at 08:50 and ~9.85k-9.92k from 08:55 onward.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "An RDS infrastructure event for tracking-db fired at 08:58 reporting write IOPS at 98% of the provisioned 10,000 for 5 minutes, corroborating database-side saturation during the incident onset.",
+            "evidence_ids": [
+              "E8"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Peak concurrent queries after 09:00 exceeded 40 connections.",
+          "Pool change was applied fleet-wide immediately at 08:55."
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H2",
+        "statement": "tracking-db developed higher query latency or lock contention around 09:00, causing tracking-api to hold connections longer and exhaust its own pool even if the configured pool size was previously adequate.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E7",
+          "E8",
+          "E9",
+          "E15",
+          "E27",
+          "E23",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E10",
+          "E12",
+          "E14",
+          "E21",
+          "E39"
+        ],
+        "contradicting_evidence": [
+          "E16",
+          "E32"
+        ],
+        "facts": [
+          {
+            "text": "tracking-db aggregate health degraded before the reported 08:55 pool change: query_latency_p99 rose from 8-10 ms at 08:30-08:45 to 140 ms at 08:50, 610 ms at 08:55, and stayed around 950-990 ms from 09:00 onward; lock_waits_per_s rose from 0 to 31 at 08:50 and then ~44-48/s; write_iops rose from ~1.5k to 8.9k at 08:50 and ~9.85k-9.92k from 08:55 onward.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "An RDS infrastructure event for tracking-db fired at 08:58 reporting write IOPS at 98% of the provisioned 10,000 for 5 minutes, corroborating database-side saturation during the incident onset.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "tracking-db emitted a lock-wait warning at 09:05:43: \"process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms\", which is direct evidence of lock contention on the database during the error period.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "tracking-db metrics from 09:00 to 10:25 show query_latency_p99 between 950 and 990 ms, write_iops between 9870 and 9920 against a noted provisioned 10000 write IOPS service, and lock_waits_per_s between 45 and 48 throughout; returned data ends at 10:25 although the requested window ran to 10:30.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "An infrastructure event for `tracking-db` at 2026-09-15T08:58:00Z reported `WriteIOPSHigh` with message 'Write IOPS at 98% of provisioned (10000) for 5 minutes.'",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "Runbook search returned an organisation runbook titled \"Tuning service DB pools\" whose body says: \"Pool size should cover peak concurrent queries with 50% headroom. Pool exhaustion is usually a symptom of slow queries; check DB latency before resizing.\"",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "tracking-api DB-pool metrics show db_pool_max_size at 50 through 08:50 and 40 starting at 08:55. db_pool_in_use was 31 at 08:50, then 40 at 08:55 and remained 40 through 10:25. db_pool_wait_p99 was 3 ms at 08:50, 420 ms at 08:55, and about 1950-1995 ms from 09:00 through 10:25.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "tracking-api ERROR logs in the requested window contain the exact message \"timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)\" at 09:02:11Z, 09:10:02Z, and 09:21:45Z; affected routes shown were GET /shipments/{id}/events and GET /shipments/{id}.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "One returned tracking-api error trace (trace_id t-c16-fail-1) started at 09:12:05Z, lasted 2006 ms, and contains a GET /shipments/{id}/events span with attrs error=pool_timeout plus a db.pool.acquire span lasting 2000 ms with attrs error=timeout.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "tracking-api alerts fired at 09:03:00Z and 09:04:00Z: TrackingApi5xxHigh reported \"tracking-api 5xx above 5% for 3 minutes\" and DbPoolSaturated reported \"tracking-api DB pool at 100% utilisation\".",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "A tracking-api error trace at 09:12:05 failed after spending 2000 ms in db.pool.acquire with error=timeout/pool_timeout; the trace shows the application timing out waiting for a DB connection from its own pool, consistent with the reported partner-facing failures.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Topology shows the failing partner request path is partner-api -> tracking-api, and tracking-api depends on tracking-db and events-queue. The same topology also shows tracking-db is shared by tracking-api, webhook-ingest, and data-jobs, while events-queue is shared by tracking-api and webhook-ingest.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "tracking-api metrics from 09:00 to 10:25 show error_rate staying around 11.8% to 13.2% while request_rate stays roughly flat at 417 to 424 rps. In the same period db_pool_in_use is 40.0 at every point, db_pool_max_size is 40.0 at every point, and db_pool_wait_p99 is 1950 to 1995 ms; returned data ends at 10:25 although the requested window ran to 10:30.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Infrastructure events for entities matching \"tracking\" in 08:30:00Z..09:10:00Z returned one event at 2026-09-15T08:58:00Z from source rds on entity tracking-db: reason WriteIOPSHigh, message \"Write IOPS at 98% of provisioned (10000) for 5 minutes.\"",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "A broad tracking-db log search over the same 08:40-09:10 window at both INFO and DEBUG levels returned exactly one entry: `process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms` at 2026-09-15T09:05:43Z. No other DB log entries, including connection or statement records with application/client metadata, were returned in those broad searches.",
+            "evidence_ids": [
+              "E39"
+            ]
+          },
+          {
+            "text": "An error trace at 2026-09-15T09:12:05Z for tracking-api GET /shipments/{id}/events lasted 2006 ms and contains only tracking-api spans: a request span with attrs error=pool_timeout and a db.pool.acquire span lasting 2000 ms with attrs error=timeout. No events-queue or tracking-db span appears in that returned trace.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "A service-specific change-history query for `tracking-db` over 2026-09-14T00:00:00Z..2026-09-15T09:10:00Z returned no recorded changes (quality: empty true, result_count 0, at_limit false).",
+            "evidence_ids": [
+              "E32"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The latency increase was driven by an external workload rather than an internal DB fault (no patching/change events recorded)."
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H3",
+        "statement": "data-jobs started or intensified a database-heavy batch workload around 09:00, consuming tracking-db capacity or creating lock waits that slowed tracking-api queries and led to pool exhaustion in tracking-api.",
+        "status": "supported",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E26",
+          "E28",
+          "E35",
+          "E41",
+          "E7",
+          "E15",
+          "E9",
+          "E27",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E12",
+          "E21"
+        ],
+        "contradicting_evidence": [
+          "E25",
+          "E16"
+        ],
+        "facts": [
+          {
+            "text": "Infrastructure events show `job/backfill-carrier-events` was created in namespace data-jobs at 2026-09-15T08:49:50Z, and at 08:50:06Z Kubernetes reported '16 of 16 pods running' (quality: events query returned 3 events, at_limit false).",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Runbook `rb-data-backfill` states: 'Backfills that write to tracking-db must run between 01:00 and 05:00 UTC with parallelism of 4 or less, and must be announced in the platform channel.' Separately, the observed `job/backfill-carrier-events` was created at 08:49:50Z with parallelism 16 and reached 16/16 pods running at 08:50:06Z.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "A `data-jobs` INFO log at 2026-09-15T08:49:58Z states: `backfill-carrier-events started: 2,000,000 events to re-import, batch_size=5000, parallelism=16`, which is direct evidence that a large, highly parallel backfill was launched immediately before the tracking-db write-IOPS spike window.",
+            "evidence_ids": [
+              "E35"
+            ]
+          },
+          {
+            "text": "Kubernetes infra events for 2026-09-15T08:40:00Z..09:30:00Z show `job/backfill-carrier-events` was created at 08:49:50Z in namespace `data-jobs` by `data-eng` with parallelism 16, and by 08:50:06Z Kubernetes reported `16 of 16 pods running`.",
+            "evidence_ids": [
+              "E41"
+            ]
+          },
+          {
+            "text": "tracking-db aggregate health degraded before the reported 08:55 pool change: query_latency_p99 rose from 8-10 ms at 08:30-08:45 to 140 ms at 08:50, 610 ms at 08:55, and stayed around 950-990 ms from 09:00 onward; lock_waits_per_s rose from 0 to 31 at 08:50 and then ~44-48/s; write_iops rose from ~1.5k to 8.9k at 08:50 and ~9.85k-9.92k from 08:55 onward.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "tracking-db metrics from 09:00 to 10:25 show query_latency_p99 between 950 and 990 ms, write_iops between 9870 and 9920 against a noted provisioned 10000 write IOPS service, and lock_waits_per_s between 45 and 48 throughout; returned data ends at 10:25 although the requested window ran to 10:30.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "tracking-db emitted a lock-wait warning at 09:05:43: \"process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms\", which is direct evidence of lock contention on the database during the error period.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "An infrastructure event for `tracking-db` at 2026-09-15T08:58:00Z reported `WriteIOPSHigh` with message 'Write IOPS at 98% of provisioned (10000) for 5 minutes.'",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "tracking-api DB-pool metrics show db_pool_max_size at 50 through 08:50 and 40 starting at 08:55. db_pool_in_use was 31 at 08:50, then 40 at 08:55 and remained 40 through 10:25. db_pool_wait_p99 was 3 ms at 08:50, 420 ms at 08:55, and about 1950-1995 ms from 09:00 through 10:25.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "tracking-api ERROR logs in the requested window contain the exact message \"timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)\" at 09:02:11Z, 09:10:02Z, and 09:21:45Z; affected routes shown were GET /shipments/{id}/events and GET /shipments/{id}.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "One returned tracking-api error trace (trace_id t-c16-fail-1) started at 09:12:05Z, lasted 2006 ms, and contains a GET /shipments/{id}/events span with attrs error=pool_timeout plus a db.pool.acquire span lasting 2000 ms with attrs error=timeout.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "tracking-api alerts fired at 09:03:00Z and 09:04:00Z: TrackingApi5xxHigh reported \"tracking-api 5xx above 5% for 3 minutes\" and DbPoolSaturated reported \"tracking-api DB pool at 100% utilisation\".",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Topology shows the failing partner request path is partner-api -> tracking-api, and tracking-api depends on tracking-db and events-queue. The same topology also shows tracking-db is shared by tracking-api, webhook-ingest, and data-jobs, while events-queue is shared by tracking-api and webhook-ingest.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Infrastructure events for entities matching \"tracking\" in 08:30:00Z..09:10:00Z returned one event at 2026-09-15T08:58:00Z from source rds on entity tracking-db: reason WriteIOPSHigh, message \"Write IOPS at 98% of provisioned (10000) for 5 minutes.\"",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "A broad change-history query for 2026-09-15T08:30:00Z..09:10:00Z returned exactly one change: at 08:55:00Z, tracking-api config changed `db.pool.max_size` from 50 to 40 by `platform-finops`; no changes for webhook-ingest, data-jobs, or tracking-db were returned in that query (quality: result_count 1, at_limit false, out_of_requested_range false).",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "An error trace at 2026-09-15T09:12:05Z for tracking-api GET /shipments/{id}/events lasted 2006 ms and contains only tracking-api spans: a request span with attrs error=pool_timeout and a db.pool.acquire span lasting 2000 ms with attrs error=timeout. No events-queue or tracking-db span appears in that returned trace.",
+            "evidence_ids": [
+              "E16"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Data-jobs writes were large enough to degrade DB performance.",
+          "Data-jobs is the only other significant writer at that time."
+        ]
+      },
+      {
+        "rank": 5,
+        "hypothesis_id": "H4",
+        "statement": "webhook-ingest increased its write load or began issuing slower transactions against tracking-db around 09:00, creating shared-database contention that caused tracking-api connections to remain checked out long enough for its pool to exhaust.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E9",
+          "E12",
+          "E15",
+          "E21",
+          "E27"
+        ],
+        "contradicting_evidence": [
+          "E30",
+          "E31",
+          "E25",
+          "E16"
+        ],
+        "facts": [
+          {
+            "text": "tracking-api DB-pool metrics show db_pool_max_size at 50 through 08:50 and 40 starting at 08:55. db_pool_in_use was 31 at 08:50, then 40 at 08:55 and remained 40 through 10:25. db_pool_wait_p99 was 3 ms at 08:50, 420 ms at 08:55, and about 1950-1995 ms from 09:00 through 10:25.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "tracking-api ERROR logs in the requested window contain the exact message \"timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)\" at 09:02:11Z, 09:10:02Z, and 09:21:45Z; affected routes shown were GET /shipments/{id}/events and GET /shipments/{id}.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "One returned tracking-api error trace (trace_id t-c16-fail-1) started at 09:12:05Z, lasted 2006 ms, and contains a GET /shipments/{id}/events span with attrs error=pool_timeout plus a db.pool.acquire span lasting 2000 ms with attrs error=timeout.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "tracking-api alerts fired at 09:03:00Z and 09:04:00Z: TrackingApi5xxHigh reported \"tracking-api 5xx above 5% for 3 minutes\" and DbPoolSaturated reported \"tracking-api DB pool at 100% utilisation\".",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "tracking-db emitted a lock-wait warning at 09:05:43: \"process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms\", which is direct evidence of lock contention on the database during the error period.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "Topology shows the failing partner request path is partner-api -> tracking-api, and tracking-api depends on tracking-db and events-queue. The same topology also shows tracking-db is shared by tracking-api, webhook-ingest, and data-jobs, while events-queue is shared by tracking-api and webhook-ingest.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "tracking-db metrics from 09:00 to 10:25 show query_latency_p99 between 950 and 990 ms, write_iops between 9870 and 9920 against a noted provisioned 10000 write IOPS service, and lock_waits_per_s between 45 and 48 throughout; returned data ends at 10:25 although the requested window ran to 10:30.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "Infrastructure events for entities matching \"tracking\" in 08:30:00Z..09:10:00Z returned one event at 2026-09-15T08:58:00Z from source rds on entity tracking-db: reason WriteIOPSHigh, message \"Write IOPS at 98% of provisioned (10000) for 5 minutes.\"",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "An infrastructure event for `tracking-db` at 2026-09-15T08:58:00Z reported `WriteIOPSHigh` with message 'Write IOPS at 98% of provisioned (10000) for 5 minutes.'",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "A service-specific change-history query for `webhook-ingest` over 2026-09-14T00:00:00Z..2026-09-15T09:10:00Z returned no recorded changes (quality: empty true, result_count 0, at_limit false).",
+            "evidence_ids": [
+              "E30"
+            ]
+          },
+          {
+            "text": "A Kubernetes infrastructure-events query for entity `webhook-ingest` over 2026-09-15T08:30:00Z..09:10:00Z returned no events (quality: empty true, result_count 0, at_limit false).",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "A broad change-history query for 2026-09-15T08:30:00Z..09:10:00Z returned exactly one change: at 08:55:00Z, tracking-api config changed `db.pool.max_size` from 50 to 40 by `platform-finops`; no changes for webhook-ingest, data-jobs, or tracking-db were returned in that query (quality: result_count 1, at_limit false, out_of_requested_range false).",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "An error trace at 2026-09-15T09:12:05Z for tracking-api GET /shipments/{id}/events lasted 2006 ms and contains only tracking-api spans: a request span with attrs error=pool_timeout and a db.pool.acquire span lasting 2000 ms with attrs error=timeout. No events-queue or tracking-db span appears in that returned trace.",
+            "evidence_ids": [
+              "E16"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Immediately pause or throttle `job/backfill-carrier-events` and keep heavy backfills off `tracking-db` until DB latency, lock waits, and write IOPS return to normal.",
+        "rationale": "The strongest causal chain starts with the backfill launching at 08:49 with parallelism 16, followed within minutes by DB write IOPS saturation, rising latency, and lock waits. Stopping that load is the fastest way to reduce connection hold times and relieve pool exhaustion.",
+        "evidence_ids": [
+          "E26",
+          "E28",
+          "E35",
+          "E41",
+          "E7",
+          "E8",
+          "E9",
+          "E15",
+          "E27"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Revert the tracking-api DB pool reduction from 40 back to the previous value of 50 as an immediate mitigation, and reassess only after DB performance is stable.",
+        "rationale": "The application started hitting pool saturation immediately after the reduction to 40, and errors were explicit pool-acquire timeouts at full utilisation. Reverting should restore some headroom, but it addresses the symptom and not the underlying DB slowdown, so it should not be the only action.",
+        "evidence_ids": [
+          "E18",
+          "E19",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E10",
+          "E14",
+          "E7",
+          "E8"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Correct the backfill execution pattern: reschedule this workload to the approved maintenance window and cap parallelism to runbook limits before rerunning.",
+        "rationale": "The observed job violated the documented operating constraints for backfills against `tracking-db` by running outside 01:00-05:00 UTC and at parallelism 16 instead of 4 or less. Even if attribution is not fully conclusive, the current execution pattern is demonstrably unsafe relative to policy and strongly correlated with the onset of DB saturation.",
+        "evidence_ids": [
+          "E28",
+          "E26",
+          "E35",
+          "E41"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Add admission/change controls for database-heavy backfills: require approval, enforce schedule/parallelism guardrails, and record these jobs in change history.",
+        "rationale": "This job appears in Kubernetes events and service logs but not in change history, reducing visibility and making conflict detection harder. Guardrails would prevent unannounced high-parallelism backfills from competing with production traffic.",
+        "evidence_ids": [
+          "E25",
+          "E26",
+          "E28",
+          "E29",
+          "E35",
+          "E41"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "prevent",
+        "action": "Update FinOps/service ownership process so DB pool right-sizing considers peak concurrency under degraded DB latency and shared-database contention, not only recent average or peak connection counts.",
+        "rationale": "The reduction was justified by a 14-day observed peak of 22 connections, but the live service needed more headroom once DB latency rose. Existing runbook guidance already warns that pool exhaustion is often secondary to slow queries and recommends headroom.",
+        "evidence_ids": [
+          "E19",
+          "E23",
+          "E2",
+          "E7",
+          "E8"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Instrument and alert on per-client `tracking-db` usage and saturation signals, including client/application-level connections, write throughput, lock waits, and statement latency.",
+        "rationale": "The investigation could see only aggregate DB metrics and almost no attributable DB logs, which prevented conclusive proof of which client saturated the database. Earlier and more granular detection would both speed mitigation and settle attribution.",
+        "evidence_ids": [
+          "E40",
+          "E38",
+          "E39",
+          "E34",
+          "E36"
+        ]
+      },
+      {
+        "rank": 7,
+        "category": "detect",
+        "action": "Add alerts for policy-violating backfills and for risky combinations of DB saturation plus API pool saturation.",
+        "rationale": "The job breached backfill runbook limits before user-visible errors began, and the incident escalated when DB saturation and pool exhaustion coincided. Alerting on those conditions would reduce time to intervention.",
+        "evidence_ids": [
+          "E28",
+          "E26",
+          "E41",
+          "E5",
+          "E8",
+          "E21"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Per-client database telemetry or logs showing which service/job consumed `tracking-db` write IOPS, locks, and connections around 08:50-09:10.",
+      "Tracking-api request concurrency and latency data, plus confirmation of whether the 08:55 pool change applied fleet-wide immediately or rolled out gradually.",
+      "Direct partner-api metrics/traces confirming the exact propagation path of partner-facing 5xxs.",
+      "Database CPU, active connection counts, and slow-query/statement data for the incident window.",
+      "Evidence of whether the backfill was approved/announced as required by the backfill runbook."
+    ],
+    "gaps": [
+      "Could not check tracking-api request-latency or request-concurrency metrics directly; the tracking-api metrics query returned only error_rate, request_rate, db_pool_in_use, db_pool_max_size, and db_pool_wait_p99.",
+      "Could not inspect tracking-db, data-jobs, or webhook-ingest telemetry for around 09:00, so this task did not confirm or refute DB latency/lock contention or competing workload changes for H2-H4.",
+      "Could not run a follow-up tracking-api log search for lock/deadlock/slow-query terms because the tool-call budget was exhausted after 8 calls.",
+      "Could not establish a partner-api 5xx/latency timeline from metrics because the partner-api metrics query returned no series in the requested window.",
+      "I did not obtain tracking-db metrics for active connections or CPU utilization; the metrics source only returned query_latency_p99, write_iops, and lock_waits_per_s for tracking-db in this window.",
+      "I did not get direct per-client activity breakdowns for tracking-api, webhook-ingest, and data-jobs at the database layer; tracking-db metrics exposed no label breakdowns, and traces for data-jobs and webhook-ingest were empty for 08:45-09:15, which could mean no traces or missing instrumentation.",
+      "I did not capture slow-query statements or client identifiers from tracking-db logs beyond one lock-wait warning, so attribution of the DB saturation to data-jobs vs webhook-ingest remains unresolved from my dataset.",
+      "Could not check webhook-ingest metrics during the incident window because the tool-call allowance was exhausted before that query completed, so H4 lacks direct load/latency measurements for webhook-ingest.",
+      "Could not compare current tracking-db or tracking-api metrics to a pre-09:00 baseline within this task, so observed latency, lock-wait, and pool values cannot be contrasted against normal levels from tool output.",
+      "No direct partner-api traces or metrics were available in this task to confirm whether partner-facing 5xxs were propagated from tracking-api versus generated independently in partner-api.",
+      "get_external_report {'name': 'config snapshots'} failed: not_found: no report named 'config snapshots'; available: []",
+      "Could not verify the rollout scope/mechanism of the 08:55 tracking-api pool change (for example whether it was hot-reloaded, pod-by-pod, or applied fleet-wide) because the config snapshot report was unavailable: get_external_report returned not_found for \"config snapshots\" (call-0033).",
+      "Could not confirm from change-history whether any non-tracking services such as data-jobs or webhook-ingest changed around 09:00, beyond the broad query returning only one change, because the task budget was exhausted before drilling into those services individually.",
+      "I could not separately query autoscaling events for `data-jobs` workers beyond the broad infrastructure query and the specific `job/backfill-carrier-events` events before tool allowance was exhausted.",
+      "I did not verify whether the backfill job was announced in the platform channel; the runbook mentions that requirement but no communications source was available in this task.",
+      "query_metrics {'start': '2026-09-15T08:40:00Z', 'end': '2026-09-15T09:10:00Z', 'service': 'job/backfill-carrier-events'} failed: not_found: unknown service 'job/backfill-carrier-events'; known services: ['data-jobs', 'events-queue', 'partner-api', 'tracking-api', 'tracking-db', 'webhook-ingest']",
+      "get_traces {'start': '2026-09-15T08:40:00Z', 'end': '2026-09-15T09:10:00Z', 'service': 'job/backfill-carrier-events', 'limit': 50} failed: not_found: unknown service 'job/backfill-carrier-events'; known services: ['data-jobs', 'events-queue', 'partner-api', 'tracking-api', 'tracking-db', 'webhook-ingest']",
+      "Could not retrieve direct `data-jobs` metrics or traces for DB write throughput, active connections, or query latency in 08:40-09:10 because `query_metrics` and `get_traces` for service `data-jobs` both returned empty results (call-0048, call-0049).",
+      "Could not query telemetry at the per-job level because `job/backfill-carrier-events` is not a recognized service name for the metrics/traces endpoints (call-0056, call-0057).",
+      "Data-jobs logs confirmed job start parameters but did not expose per-DB performance counters or connection stats in the searched window (call-0050, call-0053, call-0054).",
+      "Could not verify whether data-jobs dominated tracking-db write statements or connections, because the tracking-db log source for 08:40-09:10 returned only one lock-wait warning and no connection/statement entries with application or client identifiers.",
+      "Could not derive a per-client attribution from tracking-db metrics either: the 08:40-09:10 metrics exposed only aggregate unlabeled series with no client/application labels.",
+      "The repeated empty targeted log searches may mean tracking-db statement/connection logging was not enabled or not ingested into this source for the incident window; absence of matching entries is therefore not strong negative evidence against H5/H3.",
+      "The pod-specific query returned empty results, which could mean no pod restart events were recorded or that pod entities are named differently in this source; I could not verify individual pod restarts from these results alone.",
+      "No Kubernetes infra events after 08:50:06Z were returned for the job through 09:30Z, so I could not confirm from this source whether the 16 pods stayed running continuously, completed silently, or scaled down without recorded events."
+    ],
+    "security_findings": [],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "tracking-api aggregate metrics for the requested window returned data from 2026-09-15T08:30:00Z to 2026-09-15T10:25:00Z. request_rate stayed between 417 and 425 rps throughout, while error_rate was 0.2-0.4% through 08:50, rose to 1.1% at 08:55, and then stayed between 11.8% and 13.2% from 09:00 through 10:25.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "tracking-api DB-pool metrics show db_pool_max_size at 50 through 08:50 and 40 starting at 08:55. db_pool_in_use was 31 at 08:50, then 40 at 08:55 and remained 40 through 10:25. db_pool_wait_p99 was 3 ms at 08:50, 420 ms at 08:55, and about 1950-1995 ms from 09:00 through 10:25.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "tracking-api ERROR logs in the requested window contain the exact message \"timeout acquiring DB connection from pool after 2000ms (pool size 40, in use 40)\" at 09:02:11Z, 09:10:02Z, and 09:21:45Z; affected routes shown were GET /shipments/{id}/events and GET /shipments/{id}.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "One returned tracking-api error trace (trace_id t-c16-fail-1) started at 09:12:05Z, lasted 2006 ms, and contains a GET /shipments/{id}/events span with attrs error=pool_timeout plus a db.pool.acquire span lasting 2000 ms with attrs error=timeout.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0036"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "tracking-api alerts fired at 09:03:00Z and 09:04:00Z: TrackingApi5xxHigh reported \"tracking-api 5xx above 5% for 3 minutes\" and DbPoolSaturated reported \"tracking-api DB pool at 100% utilisation\".",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "For partner-api, the metric query for 08:30-10:30 returned no series, the ERROR log search returned no entries, the alerts query returned no alerts, and the error-trace query returned no traces; each result was marked empty rather than out_of_requested_range.",
+        "tools": [
+          "get_alerts",
+          "get_traces",
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0020",
+          "call-0022",
+          "call-0024",
+          "call-0037"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "tracking-db aggregate health degraded before the reported 08:55 pool change: query_latency_p99 rose from 8-10 ms at 08:30-08:45 to 140 ms at 08:50, 610 ms at 08:55, and stayed around 950-990 ms from 09:00 onward; lock_waits_per_s rose from 0 to 31 at 08:50 and then ~44-48/s; write_iops rose from ~1.5k to 8.9k at 08:50 and ~9.85k-9.92k from 08:55 onward.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "An RDS infrastructure event for tracking-db fired at 08:58 reporting write IOPS at 98% of the provisioned 10,000 for 5 minutes, corroborating database-side saturation during the incident onset.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "tracking-db emitted a lock-wait warning at 09:05:43: \"process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms\", which is direct evidence of lock contention on the database during the error period.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "A tracking-api error trace at 09:12:05 failed after spending 2000 ms in db.pool.acquire with error=timeout/pool_timeout; the trace shows the application timing out waiting for a DB connection from its own pool, consistent with the reported partner-facing failures.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0038"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "No tracking-db alerts were returned for 08:30-10:30. This does not negate the observed DB degradation but means there was no alert evidence identifying a specific CPU, connection-count, or client-specific cause.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "Topology shows the failing partner request path is partner-api -> tracking-api, and tracking-api depends on tracking-db and events-queue. The same topology also shows tracking-db is shared by tracking-api, webhook-ingest, and data-jobs, while events-queue is shared by tracking-api and webhook-ingest.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "Alerts in the incident window fired on tracking-api: TrackingApi5xxHigh at 2026-09-15T09:03:00Z and DbPoolSaturated at 2026-09-15T09:04:00Z. No alerts were returned for partner-api, events-queue, tracking-db, webhook-ingest, or data-jobs in this query.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "tracking-api metrics from 09:00 to 10:25 show error_rate staying around 11.8% to 13.2% while request_rate stays roughly flat at 417 to 424 rps. In the same period db_pool_in_use is 40.0 at every point, db_pool_max_size is 40.0 at every point, and db_pool_wait_p99 is 1950 to 1995 ms; returned data ends at 10:25 although the requested window ran to 10:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "tracking-db metrics from 09:00 to 10:25 show query_latency_p99 between 950 and 990 ms, write_iops between 9870 and 9920 against a noted provisioned 10000 write IOPS service, and lock_waits_per_s between 45 and 48 throughout; returned data ends at 10:25 although the requested window ran to 10:30.",
+        "tools": [
+          "get_topology",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "An error trace at 2026-09-15T09:12:05Z for tracking-api GET /shipments/{id}/events lasted 2006 ms and contains only tracking-api spans: a request span with attrs error=pool_timeout and a db.pool.acquire span lasting 2000 ms with attrs error=timeout. No events-queue or tracking-db span appears in that returned trace.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "Metrics queries for partner-api, events-queue, and data-jobs returned no series and no available_series for the requested 09:00-10:30 window, with quality marked empty=true and note 'no results returned'.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0025",
+          "call-0026",
+          "call-0027"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "In the unfiltered change-history query for 2026-09-15 08:30:00Z..09:10:00Z, the only returned change was at 2026-09-15T08:55:00Z: a config change on tracking-api, \"Reduce db.pool.max_size from 50 to 40 (FinOps right-sizing of DB connections)\"; the result count was 1 and the returned range was only that timestamp.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "The tracking-api-specific change query for 08:30:00Z..09:10:00Z returned the same single config change at 2026-09-15T08:55:00Z, with details stating the old value was 50, the new value was 40, the author was platform-finops, and the rationale recorded was \"Peak observed pool usage over the last 14 days was 22 connections.\"",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0031"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "The tracking-db-specific change query for 08:30:00Z..09:10:00Z returned no changes; quality reported result_count 0 and empty=true.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0032"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "Infrastructure events for entities matching \"tracking\" in 08:30:00Z..09:10:00Z returned one event at 2026-09-15T08:58:00Z from source rds on entity tracking-db: reason WriteIOPSHigh, message \"Write IOPS at 98% of provisioned (10000) for 5 minutes.\"",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "The Kubernetes infra-events query for entity tracking-api in 08:30:00Z..09:10:00Z returned no events; quality reported result_count 0 and empty=true, so this source did not show a tracking-api rollout/restart event in that window.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0034"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "Runbook search returned an organisation runbook titled \"Tuning service DB pools\" whose body says: \"Pool size should cover peak concurrent queries with 50% headroom. Pool exhaustion is usually a symptom of slow queries; check DB latency before resizing.\"",
+        "tools": [
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "Past-incident search returned PIR-2026-024, \"billing-api timeouts after connection pool reduction\" (2026-05-20), whose recorded root cause was \"Pool sized below peak concurrency during month-end invoicing\" and resolution was to revert the pool size.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "A broad change-history query for 2026-09-15T08:30:00Z..09:10:00Z returned exactly one change: at 08:55:00Z, tracking-api config changed `db.pool.max_size` from 50 to 40 by `platform-finops`; no changes for webhook-ingest, data-jobs, or tracking-db were returned in that query (quality: result_count 1, at_limit false, out_of_requested_range false).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0002"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "Infrastructure events show `job/backfill-carrier-events` was created in namespace data-jobs at 2026-09-15T08:49:50Z, and at 08:50:06Z Kubernetes reported '16 of 16 pods running' (quality: events query returned 3 events, at_limit false).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E27",
+        "summary": "An infrastructure event for `tracking-db` at 2026-09-15T08:58:00Z reported `WriteIOPSHigh` with message 'Write IOPS at 98% of provisioned (10000) for 5 minutes.'",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E28",
+        "summary": "Runbook `rb-data-backfill` states: 'Backfills that write to tracking-db must run between 01:00 and 05:00 UTC with parallelism of 4 or less, and must be announced in the platform channel.' Separately, the observed `job/backfill-carrier-events` was created at 08:49:50Z with parallelism 16 and reached 16/16 pods running at 08:50:06Z.",
+        "tools": [
+          "get_infra_events",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E29",
+        "summary": "A service-specific change-history query for `data-jobs` over 2026-09-14T00:00:00Z..2026-09-15T09:10:00Z returned no recorded changes (quality: empty true, result_count 0, at_limit false).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0028"
+        ]
+      },
+      {
+        "id": "E30",
+        "summary": "A service-specific change-history query for `webhook-ingest` over 2026-09-14T00:00:00Z..2026-09-15T09:10:00Z returned no recorded changes (quality: empty true, result_count 0, at_limit false).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0029"
+        ]
+      },
+      {
+        "id": "E31",
+        "summary": "A Kubernetes infrastructure-events query for entity `webhook-ingest` over 2026-09-15T08:30:00Z..09:10:00Z returned no events (quality: empty true, result_count 0, at_limit false).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0030"
+        ]
+      },
+      {
+        "id": "E32",
+        "summary": "A service-specific change-history query for `tracking-db` over 2026-09-14T00:00:00Z..2026-09-15T09:10:00Z returned no recorded changes (quality: empty true, result_count 0, at_limit false).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0035"
+        ]
+      },
+      {
+        "id": "E33",
+        "summary": "A search for past incidents matching 'tracking-db contention data-jobs webhook-ingest' returned no incidents (quality: empty true, result_count 0).",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E34",
+        "summary": "In the exact 2026-09-15T08:40:00Z..09:10:00Z window, the `data-jobs` service returned no metrics series and no traces; both sources were empty and not out-of-range, so I could not directly measure data-jobs DB write throughput, active connections, or query latency from service telemetry.",
+        "tools": [
+          "get_traces",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0048",
+          "call-0049"
+        ]
+      },
+      {
+        "id": "E35",
+        "summary": "A `data-jobs` INFO log at 2026-09-15T08:49:58Z states: `backfill-carrier-events started: 2,000,000 events to re-import, batch_size=5000, parallelism=16`, which is direct evidence that a large, highly parallel backfill was launched immediately before the tracking-db write-IOPS spike window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0050"
+        ]
+      },
+      {
+        "id": "E36",
+        "summary": "Follow-up `data-jobs` log searches in the same window for `tracking-db` and for `rows|written|latency|connection|pool|insert|upsert` returned no entries, so application logs did not provide direct per-job evidence of DB write throughput, connection usage, or query latency.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0053",
+          "call-0054"
+        ]
+      },
+      {
+        "id": "E37",
+        "summary": "Attempts to query metrics and traces using `job/backfill-carrier-events` as the service name failed with `unknown service`; the observability tools only recognize `data-jobs` as the service, which prevented job-entity telemetry lookup through these endpoints.",
+        "tools": [
+          "get_traces",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0056",
+          "call-0057"
+        ]
+      },
+      {
+        "id": "E38",
+        "summary": "Targeted tracking-db log searches for application/client identifiers and SQL activity in 2026-09-15T08:40:00Z..09:10:00Z returned no matches: searches for `application_name|client|connection|statement`, `INSERT|UPDATE|DELETE|COPY`, and `data-jobs|backfill-carrier-events|tracking-api|webhook-ingest` all came back empty with `out_of_requested_range=false`. In this log source, I found no client-attributable connection or statement entries that could show data-jobs dominating DB activity.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0043",
+          "call-0044",
+          "call-0045"
+        ]
+      },
+      {
+        "id": "E39",
+        "summary": "A broad tracking-db log search over the same 08:40-09:10 window at both INFO and DEBUG levels returned exactly one entry: `process 4411 still waiting for ShareLock on transaction 99812 after 1000.112 ms` at 2026-09-15T09:05:43Z. No other DB log entries, including connection or statement records with application/client metadata, were returned in those broad searches.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0051",
+          "call-0052"
+        ]
+      },
+      {
+        "id": "E40",
+        "summary": "In a focused 08:40-09:10 metrics query, tracking-db exposed only three aggregate unlabeled series\u2014`query_latency_p99`, `write_iops`, and `lock_waits_per_s`\u2014and `available_series` showed empty label sets for all of them. That means there is no per-client metrics breakdown available here to aggregate DB writes or connections by client.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0055"
+        ]
+      },
+      {
+        "id": "E41",
+        "summary": "Kubernetes infra events for 2026-09-15T08:40:00Z..09:30:00Z show `job/backfill-carrier-events` was created at 08:49:50Z in namespace `data-jobs` by `data-eng` with parallelism 16, and by 08:50:06Z Kubernetes reported `16 of 16 pods running`.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0041",
+          "call-0042"
+        ]
+      },
+      {
+        "id": "E42",
+        "summary": "In the same 08:40:00Z..09:30:00Z window, the Kubernetes infra-events source returned no additional events for `job/backfill-carrier-events` after the 08:50:06Z scale-up; the returned range ends at 08:50:06Z with `at_limit=false`, so this source did not show any further replica-count changes for that job in the requested window.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0041",
+          "call-0042"
+        ]
+      },
+      {
+        "id": "E43",
+        "summary": "Targeted Kubernetes infra-event queries for `pod/backfill-carrier-events` and `cronjob/backfill-carrier-events` returned no results in 08:40:00Z..09:30:00Z, so this source did not surface any pod-restart events or a cronjob object event for the backfill during that window.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0046",
+          "call-0047"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 34,
+    "input_tokens": 231502,
+    "output_tokens": 40173,
+    "cache_read_tokens": 107008,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 24630,
+    "cost_usd": 0.849373,
+    "unpriced_calls": 0,
+    "tool_calls": 57,
+    "latency_ms": 516175.1
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 824,
+      "output_tokens": 2114,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1275,
+      "cost_usd": 0.03377,
+      "unpriced_calls": 0,
+      "tool_calls": 1,
+      "latency_ms": 25416.34
+    },
+    "observability": {
+      "llm_calls": 15,
+      "input_tokens": 126921,
+      "output_tokens": 14685,
+      "cache_read_tokens": 80384,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 9561,
+      "cost_usd": 0.35671,
+      "unpriced_calls": 0,
+      "tool_calls": 28,
+      "latency_ms": 195317.62
+    },
+    "dependency": {
+      "llm_calls": 3,
+      "input_tokens": 18213,
+      "output_tokens": 1950,
+      "cache_read_tokens": 3072,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 441,
+      "cost_usd": 0.06787,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 26711.0
+    },
+    "change_history": {
+      "llm_calls": 10,
+      "input_tokens": 49763,
+      "output_tokens": 8687,
+      "cache_read_tokens": 23552,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 4837,
+      "cost_usd": 0.201721,
+      "unpriced_calls": 0,
+      "tool_calls": 20,
+      "latency_ms": 110050.86
+    },
+    "reasoning": {
+      "llm_calls": 2,
+      "input_tokens": 13716,
+      "output_tokens": 5457,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 2880,
+      "cost_usd": 0.071088,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 69517.83
+    },
+    "critic": {
+      "llm_calls": 2,
+      "input_tokens": 14317,
+      "output_tokens": 5570,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 5120,
+      "cost_usd": 0.073194,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 66228.17
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 7748,
+      "output_tokens": 1710,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 516,
+      "cost_usd": 0.04502,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 22933.28
+    }
+  },
+  "by_model": {
+    "gpt-5.4-2026-03-05": {
+      "llm_calls": 30,
+      "input_tokens": 203469,
+      "output_tokens": 29146,
+      "cache_read_tokens": 107008,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 16630,
+      "cost_usd": 0.705091,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 380429.1
+    },
+    "o3-2025-04-16": {
+      "llm_calls": 4,
+      "input_tokens": 28033,
+      "output_tokens": 11027,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 8000,
+      "cost_usd": 0.144282,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 135746.0
+    }
+  },
+  "tool_calls": 57,
+  "latency_s": 285.51,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "tracking-db contention data-jobs webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "tracking-db contention batch jobs webhook-ingest autoscaling"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-15T09:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "service": "tracking-api",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "entity": "tracking"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "tracking-api pool exhausted tracking-db lock contention batch job webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "tracking-api connection pool tracking-db contention batch job webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-db",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "entity": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "partner-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-api",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "partner-api",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "partner-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "service": "partner-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "service": "events-queue"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "service": "data-jobs"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T00:00:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "data-jobs"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T00:00:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "entity": "webhook-ingest",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0031",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0032",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0033",
+      "tool": "get_external_report",
+      "args": {
+        "name": "config snapshots"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0034",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "entity": "tracking-api",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0035",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-14T00:00:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0036",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "tracking-api",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0037",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "service": "partner-api",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0038",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:15:00Z",
+        "service": "tracking-api",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0039",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:15:00Z",
+        "service": "data-jobs",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0040",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:15:00Z",
+        "service": "webhook-ingest",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0041",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "entity": "job/backfill-carrier-events",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0042",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "entity": "backfill-carrier-events",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0043",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "application_name|client|connection|statement",
+        "service": "tracking-db",
+        "level": "INFO",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0044",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "INSERT|UPDATE|DELETE|COPY",
+        "service": "tracking-db",
+        "level": "INFO",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0045",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "data-jobs|backfill-carrier-events|tracking-api|webhook-ingest",
+        "service": "tracking-db",
+        "level": "INFO",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0046",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "entity": "pod/backfill-carrier-events",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0047",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "entity": "cronjob/backfill-carrier-events",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0048",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "data-jobs"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0049",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "data-jobs",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0050",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "backfill-carrier-events",
+        "service": "data-jobs",
+        "level": "INFO",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0051",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "tracking-db",
+        "level": "INFO",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0052",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "tracking-db",
+        "level": "DEBUG",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0053",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "tracking-db",
+        "service": "data-jobs",
+        "level": "INFO",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0054",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "rows|written|latency|connection|pool|insert|upsert",
+        "service": "data-jobs",
+        "level": "INFO",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0055",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0056",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "job/backfill-carrier-events"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0057",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "service": "job/backfill-carrier-events",
+        "limit": 50
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1
+    }
+  ]
+}

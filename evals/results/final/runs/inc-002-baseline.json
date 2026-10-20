@@ -1,0 +1,1163 @@
+{
+  "scenario": "inc-002",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Checkout fully down right after this morning's checkout deploy",
+    "outcome": "conclusive",
+    "summary": "Checkout is failing because the mTLS certificate used by payments-svc (Certificate/payments-svc-mtls, issued by internal-ca) expired at 09:14:00Z on 2026-08-03. Checkout's payment authorize calls fail the TLS handshake with \"x509: certificate has expired\", and the 5xx rate went from ~0.3% to ~94-95%. The certificate was not renewed because a platform RBAC change on 2026-07-28 (PR #2231) removed cert-manager's get/list on issuers in the payments namespace. Renewal began failing on 07-31 at 09:14, exactly 72h before expiry, and kept failing with a 24h backoff. No alert fired for certificate expiry or for the IssuingFailed events. The checkout v3.8.1 deploy is not the cause: it changed only an email template, and v3.8.0 pods fail identically. The on-call rollback did take effect, but it cannot fix an expired certificate, so errors continue on both versions. The fix is to restore a valid payments-svc-mtls certificate and correct the RBAC, not to roll checkout back or forward.",
+    "root_cause": "payments-svc-mtls certificate (internal-ca) expired at 2026-08-03T09:14:00Z. Automatic renewal had been failing since 2026-07-31 09:14Z because cert-manager lost RBAC to read issuers in the payments namespace after the least-privilege ClusterRole change (PR #2231, 2026-07-28). Nothing alerted on the failed renewals or the expiry.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "payments-svc-mtls certificate expired because cert-manager renewal was blocked by the RBAC tightening (PR #2231), so checkout's mTLS handshakes to payments-svc fail.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "cert-manager reports Certificate/payments-svc-mtls 'Expired' with notAfter 2026-08-03T09:14:00Z.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "checkout-svc errors start at 09:14:02Z: 'authentication handshake failed: x509: certificate has expired or is not yet valid: current time ... is after 2026-08-03T09:14:00Z'. Both v3.8.0 and v3.8.1 pods show the error.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "payments-svc logs a TLS WARN at 09:14:06Z ('client offered only unsupported/expired chain; handshake aborted (peer=checkout-svc)') and inbound_tls_handshake_failures jumps from 0 to ~1830-1912/min at 09:15, with 0 before.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "cert-manager IssuingFailed on 07-31 09:14Z and 08-02 09:14Z: 'issuers.cert-manager.io \"internal-ca\" is forbidden: ... cannot get resource \"issuers\" in namespace \"payments\"'. Retry backoff 24h; renewBefore=72h.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "Platform change on 2026-07-28 15:02Z: 'Tighten cert-manager ClusterRole to least privilege (PR #2231). Removed get/list on issuers.cert-manager.io for namespaces outside cert-manager.'",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "No alerts for payments-svc from 07-25 onward, so no expiry or IssuingFailed alert fired.",
+            "evidence_ids": [
+              "E6"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The expired certificate is the payments-svc server certificate, as the topology note says payments-svc requires mTLS and its server cert comes from cert-manager. The WARN line in payments-svc refers to a client chain, so the exact side is inferred and not directly confirmed."
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "The checkout-svc v3.8.1 deploy (09:08) caused the outage and the rollback should have fixed it.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E7",
+          "E8",
+          "E9"
+        ],
+        "facts": [
+          {
+            "text": "The v3.8.1 change touched only templates/email/order_confirmation.html (email copy). It does not touch the payment path.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Errors are on v3.8.0 pods too (09:14:02Z pod checkout-svc-41c-d, and 09:24:15Z pod checkout-svc-41c-q, which runs v3.8.0 after rollback). The failure is version-independent.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "After the 09:22 rollback to v3.8.0, the v3.8.0 5xx rate stayed at 94.6-95.3% from 09:20 to 09:45.",
+            "evidence_ids": [
+              "E9"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "The rollback did not take effect (the reporter's suspicion).",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E10"
+        ],
+        "contradicting_evidence": [
+          "E11"
+        ],
+        "facts": [
+          {
+            "text": "Post-rollback logs still show v3.8.0 pods failing, so the rollback is not visible as a fix.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Pod logs at 09:24Z show version v3.8.0 running, which matches the rollback record at 09:22Z. The rollback was applied, but the errors came from the certificate, so it could not fix the outage.",
+            "evidence_ids": [
+              "E11"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "An external or downstream outage in payments-svc or psp-gateway caused the failures, not a certificate problem.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E12",
+          "E13"
+        ],
+        "facts": [
+          {
+            "text": "payments-svc logs show only TLS handshake failures, with no application errors or PSP errors in the window.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "The checkout errors are explicit x509 expiry messages, matching the cert-manager expiry at the same second.",
+            "evidence_ids": [
+              "E13"
+            ]
+          }
+        ],
+        "assumptions": [
+          "psp-gateway health was not queried directly. The evidence points to the TLS layer before any PSP call."
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Restore a valid payments-svc-mtls certificate now. Either manually re-issue it from internal-ca into the payments namespace secret (a platform-admin action), or temporarily grant cert-manager get/list on issuers in the payments namespace so it can renew. Then restart or reload checkout-svc and payments-svc so they pick up the new chain. Confirm checkout 5xx returns to ~0.3% and inbound_tls_handshake_failures returns to 0.",
+        "rationale": "The outage is an expired certificate. Only a valid certificate on the payments-svc side stops the handshake failures. Rolling checkout back or forward cannot fix it, as shown by the v3.8.0 pods still failing after the rollback.",
+        "evidence_ids": [
+          "E1",
+          "E3",
+          "E4",
+          "E9",
+          "E13"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Fix PR #2231 so cert-manager can read issuers in every namespace that holds a Certificate (for example a RoleBinding in payments scoped to issuers get/list). Confirm the renewal succeeds with a dry run or by forcing a renewal, and check that IssuingFailed events clear.",
+        "rationale": "The RBAC tightening removed the permission cert-manager needs to renew. Without this fix the certificate will expire again when the replacement expires.",
+        "evidence_ids": [
+          "E4",
+          "E5"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "detect",
+        "action": "Add alerts for cert-manager IssuingFailed events and for certificate notAfter within 14, 7 and 1 days. Alert on inbound_tls_handshake_failures spikes, which would have caught this at 09:15 (the first failures) and earlier at the renewal failures on 07-31.",
+        "rationale": "No alert fired during the 72h window in which renewal was failing, or at expiry. The IssuingFailed events and the handshake-failure metric were already available, so these alerts would have fired early.",
+        "evidence_ids": [
+          "E1",
+          "E3",
+          "E4",
+          "E6"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Require a renewal smoke test (or a cert-manager dry-run as part of the CI or policy check) for any RBAC change to cert-manager. Document a runbook for expired internal certificates; none exists today (search returned no runbook).",
+        "rationale": "The RBAC change passed review without testing renewal. A pre-merge renewal check would have caught the lost permission. The absence of a runbook slowed recovery.",
+        "evidence_ids": [
+          "E5"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "prevent",
+        "action": "Do not roll checkout forward or back to fix this incident. The v3.8.1 email-copy change is not the cause, so it can be re-deployed once the certificate is fixed. Keep checkout on v3.8.0 until the certificate is confirmed healthy to reduce change risk during recovery.",
+        "rationale": "Holding checkout on v3.8.0 avoids mixing a second change into the recovery. The email change is unrelated to the failure and can ship later on its own.",
+        "evidence_ids": [
+          "E7",
+          "E9",
+          "E11"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Whether checkout-svc needs a restart to reload the new certificate chain is unknown. Check how checkout caches the payments-svc trust bundle.",
+      "The exact contents of PR #2231 (only the summary was returned), and whether other namespaces' certificates are also affected by the RBAC change.",
+      "No direct health check on psp-gateway (external). The logs suggest the failure is at the TLS layer, before the PSP call.",
+      "No certificate expiry alert or inventory of other certificates with a notAfter in the next few days, so other expiries are unchecked.",
+      "The payments-svc WARN says 'client offered only unsupported/expired chain'. This is ambiguous about which side's certificate expired. The cert-manager event for payments-svc-mtls and the checkout x509 error both point to the server certificate, but the owner of the trust path should confirm."
+    ],
+    "gaps": [],
+    "security_findings": [],
+    "questions_for_human": [
+      "Who can re-issue payments-svc-mtls right now, and is an RBAC grant on issuers acceptable under the least-privilege policy from PR #2231?",
+      "Does checkout-svc or payments-svc need a restart to load the renewed certificate? Is there a rolling-restart runbook for this?",
+      "Which other certificates managed by cert-manager are affected by the same RBAC change, and when do they expire?",
+      "Should the checkout v3.8.1 email change be re-deployed once the certificate is fixed, or held?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "cert-manager reports Certificate/payments-svc-mtls 'Expired' with notAfter 2026-08-03T09:14:00Z.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "checkout-svc errors start at 09:14:02Z: 'authentication handshake failed: x509: certificate has expired or is not yet valid: current time ... is after 2026-08-03T09:14:00Z'. Both v3.8.0 and v3.8.1 pods show the error.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "payments-svc logs a TLS WARN at 09:14:06Z ('client offered only unsupported/expired chain; handshake aborted (peer=checkout-svc)') and inbound_tls_handshake_failures jumps from 0 to ~1830-1912/min at 09:15, with 0 before.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "cert-manager IssuingFailed on 07-31 09:14Z and 08-02 09:14Z: 'issuers.cert-manager.io \"internal-ca\" is forbidden: ... cannot get resource \"issuers\" in namespace \"payments\"'. Retry backoff 24h; renewBefore=72h.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Platform change on 2026-07-28 15:02Z: 'Tighten cert-manager ClusterRole to least privilege (PR #2231). Removed get/list on issuers.cert-manager.io for namespaces outside cert-manager.'",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "No alerts for payments-svc from 07-25 onward, so no expiry or IssuingFailed alert fired.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "The v3.8.1 change touched only templates/email/order_confirmation.html (email copy). It does not touch the payment path.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0001"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Errors are on v3.8.0 pods too (09:14:02Z pod checkout-svc-41c-d, and 09:24:15Z pod checkout-svc-41c-q, which runs v3.8.0 after rollback). The failure is version-independent.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "After the 09:22 rollback to v3.8.0, the v3.8.0 5xx rate stayed at 94.6-95.3% from 09:20 to 09:45.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0018",
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Post-rollback logs still show v3.8.0 pods failing, so the rollback is not visible as a fix.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "Pod logs at 09:24Z show version v3.8.0 running, which matches the rollback record at 09:22Z. The rollback was applied, but the errors came from the certificate, so it could not fix the outage.",
+        "tools": [
+          "get_changes",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0001",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "payments-svc logs show only TLS handshake failures, with no application errors or PSP errors in the window.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "The checkout errors are explicit x509 expiry messages, matching the cert-manager expiry at the same second.",
+        "tools": [
+          "get_infra_events",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0007"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 7,
+    "input_tokens": 94648,
+    "output_tokens": 11957,
+    "cache_read_tokens": 71203,
+    "cache_write_tokens": 23429,
+    "reasoning_tokens": 2569,
+    "cost_usd": 0.009622,
+    "unpriced_calls": 0,
+    "tool_calls": 18,
+    "latency_ms": 50454.03
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 7,
+      "input_tokens": 94648,
+      "output_tokens": 11957,
+      "cache_read_tokens": 71203,
+      "cache_write_tokens": 23429,
+      "reasoning_tokens": 2569,
+      "cost_usd": 0.009622,
+      "unpriced_calls": 0,
+      "tool_calls": 18,
+      "latency_ms": 50454.03
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 7,
+      "input_tokens": 94648,
+      "output_tokens": 11957,
+      "cache_read_tokens": 71203,
+      "cache_write_tokens": 23429,
+      "reasoning_tokens": 2569,
+      "cost_usd": 0.009622,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 50454.03
+    }
+  },
+  "tool_calls": 18,
+  "latency_s": 50.494,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-03T00:00:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-08-03T09:08:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v3.8.0 -> v3.8.1 (order confirmation email copy change)",
+            "author": "checkout-team",
+            "details": "Only templates/email/order_confirmation.html changed. Rollout complete 09:12."
+          },
+          {
+            "ts": "2026-08-03T09:22:00Z",
+            "kind": "rollback",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v3.8.1 -> v3.8.0 (on-call rollback)",
+            "author": "oncall",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-03T08:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-08-03T09:17:00Z",
+            "name": "CheckoutErrorRateHigh",
+            "severity": "critical",
+            "entity": "checkout-svc",
+            "state": "firing",
+            "summary": "5xx rate 94% > 2%"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_topology",
+      "args": {
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "api-gateway",
+            "kind": "gateway",
+            "depends_on": [
+              "checkout-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "checkout-svc",
+            "kind": "service",
+            "depends_on": [
+              "payments-svc",
+              "orders-db"
+            ],
+            "notes": null
+          },
+          {
+            "name": "payments-svc",
+            "kind": "service",
+            "depends_on": [
+              "psp-gateway"
+            ],
+            "notes": "Requires mTLS from callers; server cert issued by cert-manager (issuer internal-ca)"
+          },
+          {
+            "name": "psp-gateway",
+            "kind": "external",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "orders-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [
+          "api-gateway"
+        ],
+        "downstream": [
+          "orders-db",
+          "payments-svc",
+          "psp-gateway"
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-03T08:30:00Z",
+        "service": "checkout-svc",
+        "level": "ERROR",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-03T09:14:02Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "payment authorize failed: rpc error: code = Unavailable desc = connection error: transport: authentication handshake failed: x509: certificate has expired or is not yet valid: current time 2026-08-03T09:14:02Z is after 2026-08-03T09:14:00Z",
+            "attrs": {
+              "version": "v3.8.0",
+              "pod": "checkout-svc-41c-d"
+            }
+          },
+          {
+            "ts": "2026-08-03T09:14:05Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "payment authorize failed: rpc error: code = Unavailable desc = connection error: transport: authentication handshake failed: x509: certificate has expired or is not yet valid",
+            "attrs": {
+              "version": "v3.8.1",
+              "pod": "checkout-svc-58f-a"
+            }
+          },
+          {
+            "ts": "2026-08-03T09:24:15Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "payment authorize failed: ... x509: certificate has expired or is not yet valid",
+            "attrs": {
+              "version": "v3.8.0",
+              "pod": "checkout-svc-41c-q"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-03T08:30:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "checkout-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-03T08:40:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-03T08:45:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-03T08:50:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-03T08:55:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-03T09:00:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-03T09:05:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-03T09:10:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-03T09:15:00Z",
+                "value": 94.1
+              },
+              {
+                "ts": "2026-08-03T09:20:00Z",
+                "value": 95.0
+              },
+              {
+                "ts": "2026-08-03T09:25:00Z",
+                "value": 94.7
+              },
+              {
+                "ts": "2026-08-03T09:30:00Z",
+                "value": 95.2
+              },
+              {
+                "ts": "2026-08-03T09:35:00Z",
+                "value": 94.8
+              },
+              {
+                "ts": "2026-08-03T09:40:00Z",
+                "value": 95.1
+              },
+              {
+                "ts": "2026-08-03T09:45:00Z",
+                "value": 94.9
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          },
+          {
+            "name": "http_5xx_rate",
+            "labels": {
+              "version": "v3.8.0"
+            }
+          },
+          {
+            "name": "http_5xx_rate",
+            "labels": {
+              "version": "v3.8.1"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-03T08:30:00Z",
+        "service": "payments-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-03T09:14:06Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "tls: client offered only unsupported/expired chain; handshake aborted (peer=checkout-svc)",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-03T08:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-03T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "Expired",
+            "message": "Certificate has expired (notAfter 2026-08-03T09:14:00Z)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_changes",
+      "args": {
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-02T00:00:00Z",
+        "query": "certificate|cert-manager|renew|issuer|x509|tls",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-03T09:14:02Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "payment authorize failed: rpc error: code = Unavailable desc = connection error: transport: authentication handshake failed: x509: certificate has expired or is not yet valid: current time 2026-08-03T09:14:02Z is after 2026-08-03T09:14:00Z",
+            "attrs": {
+              "version": "v3.8.0",
+              "pod": "checkout-svc-41c-d"
+            }
+          },
+          {
+            "ts": "2026-08-03T09:14:05Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "payment authorize failed: rpc error: code = Unavailable desc = connection error: transport: authentication handshake failed: x509: certificate has expired or is not yet valid",
+            "attrs": {
+              "version": "v3.8.1",
+              "pod": "checkout-svc-58f-a"
+            }
+          },
+          {
+            "ts": "2026-08-03T09:14:06Z",
+            "service": "payments-svc",
+            "level": "WARN",
+            "message": "tls: client offered only unsupported/expired chain; handshake aborted (peer=checkout-svc)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-08-03T09:24:15Z",
+            "service": "checkout-svc",
+            "level": "ERROR",
+            "message": "payment authorize failed: ... x509: certificate has expired or is not yet valid",
+            "attrs": {
+              "version": "v3.8.0",
+              "pod": "checkout-svc-41c-q"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "get_infra_events",
+      "args": {
+        "source": "cert-manager"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-07-31T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "IssuingFailed",
+            "message": "issuers.cert-manager.io \"internal-ca\" is forbidden: User \"system:serviceaccount:cert-manager:cert-manager\" cannot get resource \"issuers\" in namespace \"payments\""
+          },
+          {
+            "ts": "2026-08-02T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "IssuingFailed",
+            "message": "same as above; retry backoff 24h; certificate notAfter=2026-08-03T09:14:00Z, renewBefore=72h"
+          },
+          {
+            "ts": "2026-08-03T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "Expired",
+            "message": "Certificate has expired (notAfter 2026-08-03T09:14:00Z)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-03T08:30:00Z",
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "payments-svc",
+            "name": "inbound_tls_handshake_failures",
+            "unit": "per_min",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-03T08:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T08:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T08:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T08:55:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T09:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T09:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T09:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-03T09:15:00Z",
+                "value": 1830.0
+              },
+              {
+                "ts": "2026-08-03T09:20:00Z",
+                "value": 1912.0
+              },
+              {
+                "ts": "2026-08-03T09:25:00Z",
+                "value": 1876.0
+              },
+              {
+                "ts": "2026-08-03T09:30:00Z",
+                "value": 1901.0
+              },
+              {
+                "ts": "2026-08-03T09:35:00Z",
+                "value": 1888.0
+              },
+              {
+                "ts": "2026-08-03T09:40:00Z",
+                "value": 1895.0
+              },
+              {
+                "ts": "2026-08-03T09:45:00Z",
+                "value": 1870.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "inbound_tls_handshake_failures",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "certificate expired mTLS cert-manager"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "certificate expired"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2025-112",
+            "date": "2025-11-20T00:00:00Z",
+            "title": "Expired public TLS certificate on api domain",
+            "summary": "Public api certificate expired; mobile clients failed TLS for 40 minutes.",
+            "root_cause": "Manual certificate renewal missed.",
+            "resolution": "Moved public certs to cert-manager; added expiry alerts for public endpoints."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-07-25T00:00:00Z",
+        "end": "2026-08-03T09:50:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-07-28T15:02:00Z",
+            "kind": "infra",
+            "service": "cert-manager",
+            "summary": "Tighten cert-manager ClusterRole to least privilege (PR #2231)",
+            "author": "platform-team",
+            "details": "Removed get/list on issuers.cert-manager.io for namespaces outside cert-manager."
+          },
+          {
+            "ts": "2026-08-03T09:08:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v3.8.0 -> v3.8.1 (order confirmation email copy change)",
+            "author": "checkout-team",
+            "details": "Only templates/email/order_confirmation.html changed. Rollout complete 09:12."
+          },
+          {
+            "ts": "2026-08-03T09:22:00Z",
+            "kind": "rollback",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v3.8.1 -> v3.8.0 (on-call rollback)",
+            "author": "oncall",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-07-25T00:00:00Z",
+        "service": "payments-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-07-20T00:00:00Z",
+        "entity": "payments"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-07-31T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "IssuingFailed",
+            "message": "issuers.cert-manager.io \"internal-ca\" is forbidden: User \"system:serviceaccount:cert-manager:cert-manager\" cannot get resource \"issuers\" in namespace \"payments\""
+          },
+          {
+            "ts": "2026-08-02T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "IssuingFailed",
+            "message": "same as above; retry backoff 24h; certificate notAfter=2026-08-03T09:14:00Z, renewBefore=72h"
+          },
+          {
+            "ts": "2026-08-03T09:14:00Z",
+            "source": "cert-manager",
+            "entity": "Certificate/payments-svc-mtls",
+            "reason": "Expired",
+            "message": "Certificate has expired (notAfter 2026-08-03T09:14:00Z)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-07-25T00:00:00Z",
+        "query": "forbidden|rbac|serviceaccount|issuers",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-03T09:00:00Z",
+        "end": "2026-08-03T09:50:00Z",
+        "service": "checkout-svc",
+        "name": "http_5xx_rate",
+        "labels": {
+          "version": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "checkout-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {
+              "version": "v3.8.0"
+            },
+            "points": [
+              {
+                "ts": "2026-08-03T09:00:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-03T09:05:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-03T09:10:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-03T09:15:00Z",
+                "value": 94.0
+              },
+              {
+                "ts": "2026-08-03T09:20:00Z",
+                "value": 95.3
+              },
+              {
+                "ts": "2026-08-03T09:25:00Z",
+                "value": 94.6
+              },
+              {
+                "ts": "2026-08-03T09:30:00Z",
+                "value": 95.2
+              },
+              {
+                "ts": "2026-08-03T09:35:00Z",
+                "value": 94.8
+              },
+              {
+                "ts": "2026-08-03T09:40:00Z",
+                "value": 95.1
+              },
+              {
+                "ts": "2026-08-03T09:45:00Z",
+                "value": 94.9
+              }
+            ]
+          },
+          {
+            "service": "checkout-svc",
+            "name": "http_5xx_rate",
+            "unit": "percent",
+            "labels": {
+              "version": "v3.8.1"
+            },
+            "points": [
+              {
+                "ts": "2026-08-03T09:10:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-03T09:15:00Z",
+                "value": 94.2
+              },
+              {
+                "ts": "2026-08-03T09:20:00Z",
+                "value": 94.8
+              },
+              {
+                "ts": "2026-08-03T09:25:00Z",
+                "value": 94.9
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "http_5xx_rate",
+            "labels": {}
+          },
+          {
+            "name": "http_5xx_rate",
+            "labels": {
+              "version": "v3.8.0"
+            }
+          },
+          {
+            "name": "http_5xx_rate",
+            "labels": {
+              "version": "v3.8.1"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

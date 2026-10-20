@@ -1,0 +1,2819 @@
+{
+  "scenario": "inc-014",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Search slow and returning partial results since ~13:20",
+    "outcome": "conclusive",
+    "summary": "Search latency and partial results began around 13:20Z on 2026-08-21. The reporter's suspicion of search-api 4.2.0 is not supported by the data. The 4.2.0 rollout ran 13:12:05Z to 13:16:40Z, and the 13:20Z step in search-api p99 (about 300 ms to about 2.6 s) and error rate (0.2-0.3% to 5.1%) comes after it. Confirmed facts: pricing-cache-002 began a full resync at 13:02:14Z, the primary pricing-cache-001 failed at 13:17:42Z, and failover completed at 13:18:31Z with only 0.4M keys against 9.8M before. Over the same window pricing-svc cache_hit_ratio fell from about 0.96 to 0.15, pricing-svc p99 rose from about 40 ms to about 2380 ms, and rates-db CPU went from about 30% to 96%. Sampled slow traces show pricing-svc getQuotes timing out at about 2450 ms with cache=miss, while ranking.score stays at 33-35 ms (41 ms on 4.1.3), and the search-api deadline WARN reports 12 of 40 candidates ranked. The leading explanation is a cold-cache miss storm sending pricing reads to rates-db, which saturates it and causes pricing timeouts, search deadline overruns and partial results. Assumptions still to confirm: that the cache misses are caused by the failover (pricing-cache has no metrics or logs in the window), the share of requests affected (only 3 slow traces sampled), and whether 4.2.0 requests with cache hits are unaffected. The 2.8.4 pricing-svc deploy on 08-20 is untested because no data covers that window, though the 13:05 trace (14 ms, cache hit) argues against it.",
+    "root_cause": "The pricing-cache primary (pricing-cache-001) failed on a host hardware fault at 13:17:42Z, and failover promoted pricing-cache-002. That replica had begun a full resync at 13:02:14Z and held only 0.4M keys at promotion, against 9.8M on the old primary. The cold cache produced a miss storm (cache_hit_ratio fell to 0.15 at 13:20Z, and pricing-svc logged a miss ratio of 0.85 at 13:21:12Z). Those misses sent pricing reads to rates-db, which went to 96% CPU. Pricing calls then exceeded their timeout (about 2450 ms, error=timeout, cache=miss). The search-api 2500 ms deadline was hit, so the ranking stage ran on only 12 of 40 priced candidates and returned partial or empty pages. The 4.2.0 ranking model is not implicated: ranking.score stayed at 33-35 ms.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H5",
+        "statement": "Pricing-cache primary failure and failover to a cold replica at 13:17-13:18 caused a surge of cache misses that routed pricing-svc calls to rates-db, saturating rates-db CPU and triggering timeouts in pricing-svc getQuotes, which cascaded into search-api 4.2.0 hitting its 2500 ms deadline, producing high p99 latency and partial/empty search results.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E4",
+          "E19",
+          "E20",
+          "E21",
+          "E23",
+          "E24",
+          "E25",
+          "E30",
+          "E32",
+          "E34",
+          "E11"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "ElastiCache events for pricing-cache: at 2026-08-21T13:02:14Z pricing-cache-002 started a full replica resync because its replication backlog was exceeded. At 13:17:42Z primary pricing-cache-001 failed health checks (host hardware fault) and failover began, promoting pricing-cache-002. At 13:18:31Z failover completed. Keys at promotion were 0.4M, against 9.8M on the previous primary, so the promoted cache is mostly cold. A replacement replica pricing-cache-003 is being created.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "ElastiCache event: pricing-cache-002 began a full resynchronization from primary at 13:02:14Z because the replication backlog was exceeded.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "ElastiCache events: pricing-cache-001 primary failed health checks (host hardware fault) at 13:17:42Z. Failover completed at 13:18:31Z, promoting pricing-cache-002. Keys at promotion were 0.4M, versus 9.8M reported by the previous primary. Replacement replica pricing-cache-003 was being created.",
+            "evidence_ids": [
+              "E20"
+            ]
+          },
+          {
+            "text": "The pricing-cache failover (13:17:42-13:18:31Z) and the 4.2.0 rollout (13:12:05-13:16:40Z) both occur before the 13:20Z latency and error jump. The 13:02 replica resync also precedes the jump. The 5-minute metric samples cannot order these events more finely.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "pricing-svc latency_p99 was flat at about 38-44 ms from 12:30 to 13:15Z on 2026-08-21, then jumped to 2380 ms at 13:20Z and stayed between 2190 and 2460 ms through 14:00Z (slowly easing). The step is at 13:20Z, not at 13:12Z.",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "pricing-svc cache_hit_ratio fell from about 0.96-0.97 (12:30-13:15Z) to 0.15 at 13:20Z, then recovered slowly to only 0.37 by 14:00Z. The drop coincides with the latency step.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "rates-db cpu_utilization rose from about 28-32% (12:30-13:15Z) to 96% at 13:20Z and stayed 94-97% through 14:00Z. The rates-db PostgresCPUHigh warning fired at 13:28Z.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Sampled slow search-api error traces (13:24:02Z, 2511 ms; 13:40:47Z, 2504 ms; both search-api 4.2.0, error=deadline_exceeded) each have a pricing-svc getQuotes span of about 2450-2460 ms with status error, error=timeout, cache=miss, quotes=40. The pricing-svc span is the dominant component of the latency in both traces. ranking.score is 33-35 ms in both.",
+            "evidence_ids": [
+              "E30"
+            ]
+          },
+          {
+            "text": "Only one slow trace (t-c14-slow-1, 13:24:02Z) has a rates-db 'SELECT rate_quotes' span, at 2130 ms with status ok. In that trace the rates-db time sits inside the pricing-svc timeout, consistent with cache misses sending pricing reads to rates-db. The second slow trace (13:40:47Z) has no rates-db span.",
+            "evidence_ids": [
+              "E32"
+            ]
+          },
+          {
+            "text": "Partial results are tied to pricing timeouts. search-api WARN at 13:24:18Z (version 4.2.0): 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates'. In trace t-c14-slow-1, candidates_with_price=12 out of 40 quotes, so 28 candidates lacked prices when the pricing call timed out. The ranking.score span itself is short (33-35 ms), so the truncation follows the missing pricing responses rather than ranking compute.",
+            "evidence_ids": [
+              "E34"
+            ]
+          },
+          {
+            "text": "search-api logs show ERROR 'request deadline exceeded (2500ms) for GET /v2/search' at 13:22:03Z and 13:31:55Z, both tagged version 4.2.0. A WARN at 13:24:18Z reads 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates', also tagged 4.2.0.",
+            "evidence_ids": [
+              "E11"
+            ]
+          }
+        ],
+        "assumptions": [
+          "pricing-svc getQuotes prefers pricing-cache and falls back to rates-db on cache miss",
+          "the cold replica held far fewer keys, causing cache miss storm",
+          "search-api enforces a 2500 ms deadline that includes the pricing-svc call"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H4",
+        "statement": "Latency or saturation in pricing-cache or rates-db, unrelated to any recent deploy, slows pricing-svc responses and causes search timeouts and partial results.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E4",
+          "E9",
+          "E12",
+          "E13",
+          "E23",
+          "E24",
+          "E25",
+          "E30",
+          "E34",
+          "E5",
+          "E7",
+          "E11",
+          "E14",
+          "E19",
+          "E20",
+          "E21",
+          "E26",
+          "E27",
+          "E31",
+          "E32",
+          "E33"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "ElastiCache events for pricing-cache: at 2026-08-21T13:02:14Z pricing-cache-002 started a full replica resync because its replication backlog was exceeded. At 13:17:42Z primary pricing-cache-001 failed health checks (host hardware fault) and failover began, promoting pricing-cache-002. At 13:18:31Z failover completed. Keys at promotion were 0.4M, against 9.8M on the previous primary, so the promoted cache is mostly cold. A replacement replica pricing-cache-003 is being created.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "search-api error_rate was 0.2-0.3% from 12:30 to 13:15Z, rose to 5.1% at 13:20Z, peaked at 6.4% at 13:30Z, and was 4.4% at 14:00Z. request_rate stayed flat at about 840-862 rps throughout, and cpu_utilization fell from about 46% to about 38-41% after 13:20Z.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "Slow trace t-c14-slow-1 (13:24:02Z, 2511 ms, status error, search-api 4.2.0): the pricing-svc getQuotes span took 2460 ms with status error, error=timeout, cache=miss, quotes=40. The rates-db SELECT rate_quotes span took 2130 ms with status ok. The ranking.score span took 33 ms with model ltr-v7 and candidates_with_price=12.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Slow trace t-c14-slow-2 (13:40:47Z, 2504 ms, status error, search-api 4.2.0): pricing-svc getQuotes took 2450 ms with error=timeout and cache=miss. ranking.score took 35 ms with model ltr-v7.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "pricing-svc latency_p99 was flat at about 38-44 ms from 12:30 to 13:15Z on 2026-08-21, then jumped to 2380 ms at 13:20Z and stayed between 2190 and 2460 ms through 14:00Z (slowly easing). The step is at 13:20Z, not at 13:12Z.",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "pricing-svc cache_hit_ratio fell from about 0.96-0.97 (12:30-13:15Z) to 0.15 at 13:20Z, then recovered slowly to only 0.37 by 14:00Z. The drop coincides with the latency step.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "rates-db cpu_utilization rose from about 28-32% (12:30-13:15Z) to 96% at 13:20Z and stayed 94-97% through 14:00Z. The rates-db PostgresCPUHigh warning fired at 13:28Z.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Sampled slow search-api error traces (13:24:02Z, 2511 ms; 13:40:47Z, 2504 ms; both search-api 4.2.0, error=deadline_exceeded) each have a pricing-svc getQuotes span of about 2450-2460 ms with status error, error=timeout, cache=miss, quotes=40. The pricing-svc span is the dominant component of the latency in both traces. ranking.score is 33-35 ms in both.",
+            "evidence_ids": [
+              "E30"
+            ]
+          },
+          {
+            "text": "Partial results are tied to pricing timeouts. search-api WARN at 13:24:18Z (version 4.2.0): 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates'. In trace t-c14-slow-1, candidates_with_price=12 out of 40 quotes, so 28 candidates lacked prices when the pricing call timed out. The ranking.score span itself is short (33-35 ms), so the truncation follows the missing pricing responses rather than ranking compute.",
+            "evidence_ids": [
+              "E34"
+            ]
+          },
+          {
+            "text": "No infra events are recorded for search-api in any range (entity search-api returned zero events). Between 08-20T14:00Z and 08-21T13:45Z, the only infra events are the pricing-cache events above, which fall before the reported 13:20 onset (resync 13:02, failover 13:17-13:18).",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Timing: the search-api 4.2.0 deploy (13:12:00Z) precedes the reported onset (~13:20Z) by about 8 minutes. The pricing-cache failover (13:17:42Z to 13:18:31Z) lands within about 2 minutes before onset. The pricing-svc 2.8.4 deploy is about 22 hours earlier, so it does not line up with onset.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "search-api logs show ERROR 'request deadline exceeded (2500ms) for GET /v2/search' at 13:22:03Z and 13:31:55Z, both tagged version 4.2.0. A WARN at 13:24:18Z reads 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates', also tagged 4.2.0.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "Pre-change control trace t-c14-before-1 (13:05:10Z, 214 ms, status ok, search-api 4.1.3, ltr-v6): pricing-svc getQuotes took 14 ms with cache=hit and quotes=40. ranking.score took 41 ms.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "ElastiCache event: pricing-cache-002 began a full resynchronization from primary at 13:02:14Z because the replication backlog was exceeded.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "ElastiCache events: pricing-cache-001 primary failed health checks (host hardware fault) at 13:17:42Z. Failover completed at 13:18:31Z, promoting pricing-cache-002. Keys at promotion were 0.4M, versus 9.8M reported by the previous primary. Replacement replica pricing-cache-003 was being created.",
+            "evidence_ids": [
+              "E20"
+            ]
+          },
+          {
+            "text": "The pricing-cache failover (13:17:42-13:18:31Z) and the 4.2.0 rollout (13:12:05-13:16:40Z) both occur before the 13:20Z latency and error jump. The 13:02 replica resync also precedes the jump. The 5-minute metric samples cannot order these events more finely.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "Alerts in the window: SearchLatencyP99High (critical, search-api, firing 13:25Z, p99 above 1500 ms for 5 min) and PostgresCPUHigh (warning, rates-db, firing 13:28Z). No alerts were returned for pricing-svc or pricing-cache.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Timing across the three services is aligned: the pricing-svc latency step, the cache hit ratio collapse and the rates-db CPU jump all start in the same 13:15-13:20Z sample window. The search-api 4.2.0 deploy at 13:12Z precedes this by about 8 minutes, so timing alone does not separate it from the cache/DB path.",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "The pre-change trace at 13:05:10Z (search-api 4.1.3, ltr-v6, 214 ms, status ok) has pricing-svc getQuotes at 14 ms with cache=hit and quotes=40. This is the only pricing-svc trace before the 13:20 step in the sample. It shows pricing-svc was fast before the cache collapse, including on the 2.8.4 build that had been deployed on 08-20.",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "Only one slow trace (t-c14-slow-1, 13:24:02Z) has a rates-db 'SELECT rate_quotes' span, at 2130 ms with status ok. In that trace the rates-db time sits inside the pricing-svc timeout, consistent with cache misses sending pricing reads to rates-db. The second slow trace (13:40:47Z) has no rates-db span.",
+            "evidence_ids": [
+              "E32"
+            ]
+          },
+          {
+            "text": "pricing-svc WARN log at 13:21:12Z: 'cache miss ratio 0.85 over last 60s; serving from rates-db'. This is the only pricing-svc log line matching the version, config, cache, timeout, connect or deploy terms in 08-20 14:00 to 08-21 14:00. There is no log line for the 2.8.4 deploy or any pricing-svc startup or config change.",
+            "evidence_ids": [
+              "E33"
+            ]
+          }
+        ],
+        "assumptions": [
+          "pricing-svc getQuotes uses pricing-cache with fallback to rates-db",
+          "rates-db CPU exhaustion directly increases pricing-svc latency"
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H1",
+        "statement": "search-api 4.2.0 ranking model v7 adds per-request scoring cost or timeouts, so search requests run slower and some result pages are truncated or empty when ranking is cut short.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E6",
+          "E10",
+          "E11"
+        ],
+        "contradicting_evidence": [
+          "E15",
+          "E12",
+          "E13",
+          "E14",
+          "E30",
+          "E34"
+        ],
+        "facts": [
+          {
+            "text": "Past incident PIR-2026-008 (2026-02-11): search p99 rose to 1.2s after a ranking model release. Root cause was ltr-v5 being about 3x slower than v4 on large candidate sets. It was rolled back and a scoring-latency benchmark was added to the release checklist. This shows ranking-model latency regressions have happened here before, but it is an analogue, not evidence about v7. The v7 benchmark was run offline and may not reflect production candidate sizes.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "Rollout of search-api 4.2.0 (ltr-model v7, feature-store client 3.1) started at 13:12:05Z and completed at 13:16:40Z with 24/24 pods on 4.2.0.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "search-api logs show ERROR 'request deadline exceeded (2500ms) for GET /v2/search' at 13:22:03Z and 13:31:55Z, both tagged version 4.2.0. A WARN at 13:24:18Z reads 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates', also tagged 4.2.0.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "The ranking.score span is 33-35 ms in the 4.2.0 slow traces versus 41 ms in the 4.1.3 pre-change trace, so the ltr-v7 ranking stage does not appear to add per-request scoring time in these samples. The 4.2.0 slow traces are dominated by the pricing-svc timeout span.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "Slow trace t-c14-slow-1 (13:24:02Z, 2511 ms, status error, search-api 4.2.0): the pricing-svc getQuotes span took 2460 ms with status error, error=timeout, cache=miss, quotes=40. The rates-db SELECT rate_quotes span took 2130 ms with status ok. The ranking.score span took 33 ms with model ltr-v7 and candidates_with_price=12.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Slow trace t-c14-slow-2 (13:40:47Z, 2504 ms, status error, search-api 4.2.0): pricing-svc getQuotes took 2450 ms with error=timeout and cache=miss. ranking.score took 35 ms with model ltr-v7.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Pre-change control trace t-c14-before-1 (13:05:10Z, 214 ms, status ok, search-api 4.1.3, ltr-v6): pricing-svc getQuotes took 14 ms with cache=hit and quotes=40. ranking.score took 41 ms.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "Sampled slow search-api error traces (13:24:02Z, 2511 ms; 13:40:47Z, 2504 ms; both search-api 4.2.0, error=deadline_exceeded) each have a pricing-svc getQuotes span of about 2450-2460 ms with status error, error=timeout, cache=miss, quotes=40. The pricing-svc span is the dominant component of the latency in both traces. ranking.score is 33-35 ms in both.",
+            "evidence_ids": [
+              "E30"
+            ]
+          },
+          {
+            "text": "Partial results are tied to pricing timeouts. search-api WARN at 13:24:18Z (version 4.2.0): 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates'. In trace t-c14-slow-1, candidates_with_price=12 out of 40 quotes, so 28 candidates lacked prices when the pricing call timed out. The ranking.score span itself is short (33-35 ms), so the truncation follows the missing pricing responses rather than ranking compute.",
+            "evidence_ids": [
+              "E34"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H3",
+        "statement": "The pricing-svc 2.8.4 deploy on 2026-08-20 at 15:05 slowed its price lookups, so search-api calls to pricing-svc are slow and partial pricing responses reduce result completeness.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E12",
+          "E13",
+          "E34"
+        ],
+        "contradicting_evidence": [
+          "E2",
+          "E31",
+          "E4",
+          "E7",
+          "E20",
+          "E23",
+          "E24",
+          "E33"
+        ],
+        "facts": [
+          {
+            "text": "Slow trace t-c14-slow-1 (13:24:02Z, 2511 ms, status error, search-api 4.2.0): the pricing-svc getQuotes span took 2460 ms with status error, error=timeout, cache=miss, quotes=40. The rates-db SELECT rate_quotes span took 2130 ms with status ok. The ranking.score span took 33 ms with model ltr-v7 and candidates_with_price=12.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Slow trace t-c14-slow-2 (13:40:47Z, 2504 ms, status error, search-api 4.2.0): pricing-svc getQuotes took 2450 ms with error=timeout and cache=miss. ranking.score took 35 ms with model ltr-v7.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Partial results are tied to pricing timeouts. search-api WARN at 13:24:18Z (version 4.2.0): 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates'. In trace t-c14-slow-1, candidates_with_price=12 out of 40 quotes, so 28 candidates lacked prices when the pricing call timed out. The ranking.score span itself is short (33-35 ms), so the truncation follows the missing pricing responses rather than ranking compute.",
+            "evidence_ids": [
+              "E34"
+            ]
+          },
+          {
+            "text": "pricing-svc 2.8.4 deploy recorded at 2026-08-20T15:05:00Z (described as 'structured logging fields'). That is about 22 hours before the 13:20 degradation on 08-21. No other pricing-svc change appears from 08-06 through 08-21T13:45Z. The change record has no rollout scope or details.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "The pre-change trace at 13:05:10Z (search-api 4.1.3, ltr-v6, 214 ms, status ok) has pricing-svc getQuotes at 14 ms with cache=hit and quotes=40. This is the only pricing-svc trace before the 13:20 step in the sample. It shows pricing-svc was fast before the cache collapse, including on the 2.8.4 build that had been deployed on 08-20.",
+            "evidence_ids": [
+              "E31"
+            ]
+          },
+          {
+            "text": "ElastiCache events for pricing-cache: at 2026-08-21T13:02:14Z pricing-cache-002 started a full replica resync because its replication backlog was exceeded. At 13:17:42Z primary pricing-cache-001 failed health checks (host hardware fault) and failover began, promoting pricing-cache-002. At 13:18:31Z failover completed. Keys at promotion were 0.4M, against 9.8M on the previous primary, so the promoted cache is mostly cold. A replacement replica pricing-cache-003 is being created.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "Timing: the search-api 4.2.0 deploy (13:12:00Z) precedes the reported onset (~13:20Z) by about 8 minutes. The pricing-cache failover (13:17:42Z to 13:18:31Z) lands within about 2 minutes before onset. The pricing-svc 2.8.4 deploy is about 22 hours earlier, so it does not line up with onset.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "ElastiCache events: pricing-cache-001 primary failed health checks (host hardware fault) at 13:17:42Z. Failover completed at 13:18:31Z, promoting pricing-cache-002. Keys at promotion were 0.4M, versus 9.8M reported by the previous primary. Replacement replica pricing-cache-003 was being created.",
+            "evidence_ids": [
+              "E20"
+            ]
+          },
+          {
+            "text": "pricing-svc latency_p99 was flat at about 38-44 ms from 12:30 to 13:15Z on 2026-08-21, then jumped to 2380 ms at 13:20Z and stayed between 2190 and 2460 ms through 14:00Z (slowly easing). The step is at 13:20Z, not at 13:12Z.",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "pricing-svc cache_hit_ratio fell from about 0.96-0.97 (12:30-13:15Z) to 0.15 at 13:20Z, then recovered slowly to only 0.37 by 14:00Z. The drop coincides with the latency step.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "pricing-svc WARN log at 13:21:12Z: 'cache miss ratio 0.85 over last 60s; serving from rates-db'. This is the only pricing-svc log line matching the version, config, cache, timeout, connect or deploy terms in 08-20 14:00 to 08-21 14:00. There is no log line for the 2.8.4 deploy or any pricing-svc startup or config change.",
+            "evidence_ids": [
+              "E33"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 5,
+        "hypothesis_id": "H2",
+        "statement": "The feature-store client upgrade from 2.9 to 3.1 in search-api 4.2.0 is incompatible with the feature-store service, so feature fetches fail or time out and search returns partial or empty results after retries add latency.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E10"
+        ],
+        "contradicting_evidence": [
+          "E3",
+          "E16",
+          "E35"
+        ],
+        "facts": [
+          {
+            "text": "Rollout of search-api 4.2.0 (ltr-model v7, feature-store client 3.1) started at 13:12:05Z and completed at 13:16:40Z with 24/24 pods on 4.2.0.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "No changes at all are recorded for feature-store in the full change history (unbounded range). The feature-store client was upgraded on the search-api side only, so a server-side feature-store change is not the trigger.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "No feature-store spans appear in any of the three sampled traces, and no search-api log line mentions a feature-store fetch error, feature client error, or retry. The only feature-store-related line is the 13:12:05Z rollout message naming 'feature-store client 3.1'.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "search-api ERROR logs for the window show 'request deadline exceeded' tagged 4.2.0. The only WARN in 12:00-14:00 about partial results is the 13:24:18Z ranking/partial line. No search-api log mentions a feature-store fetch, client error, or retry. Feature-store spans are absent from all sampled traces (slow and pre-change).",
+            "evidence_ids": [
+              "E35"
+            ]
+          }
+        ],
+        "assumptions": [
+          "absence of feature-store spans in 3 sampled traces implies no feature fetch activity or errors"
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Reduce rates-db load from pricing cache misses now: shed or limit the miss-driven fallback to rates-db (for example by serving stale or cached quotes or capping concurrency to rates-db) and watch rates-db CPU and search-api error rate until the cache recovers. Do not change pricing timeouts or other security controls to hide the problem.",
+        "rationale": "rates-db is at 94-97% CPU and is the saturated resource behind the pricing timeouts. Relieving it addresses the immediate cause of the slow and partial results.",
+        "evidence_ids": [
+          "E25",
+          "E24",
+          "E33",
+          "E32",
+          "E12",
+          "E30"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Restore a warm, full-size pricing cache: confirm pricing-cache-003 has finished syncing, and warm the promoted cache (or re-point pricing-svc to a fully populated node) until hit ratio returns to about 0.96.",
+        "rationale": "The root cause is the cache being cold after failover. Restoring the hit ratio removes the miss storm.",
+        "evidence_ids": [
+          "E4",
+          "E20",
+          "E19",
+          "E24"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "detect",
+        "action": "Verify the cache-to-service link before closing the incident: pull pricing-cache metrics and logs for 13:00-14:00Z and pricing-svc error and timeout rates, and check how many requests were partial. This tests the assumed failover-to-miss causality and sets the impact share.",
+        "rationale": "pricing-cache has no metrics in the window, and only 3 slow traces were sampled. Causation and impact are both unverified.",
+        "evidence_ids": [
+          "E29",
+          "E36",
+          "E22",
+          "E28",
+          "E17"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Add a runbook step and an alert for cold-cache promotion: on failover, check promoted key count against the previous primary and warm before taking full traffic. Alert on pricing-svc cache_hit_ratio dropping below a threshold, and add a circuit breaker so pricing misses do not flood rates-db.",
+        "rationale": "The failover promoted a replica with 4% of the keys, and no alert fired on the hit-ratio drop. The 13:20 impact came before the 13:25 alert.",
+        "evidence_ids": [
+          "E20",
+          "E24",
+          "E26",
+          "E4"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Answer the rollback question with data: compare search latency and partial-result rate for 4.2.0 and 4.1.3 pods on cache-hit requests. Add stage-labelled latency metrics (feature-store, pricing, ranking) to search-api so future version effects can be separated from dependency effects.",
+        "rationale": "Rollback of 4.2.0 is not indicated by current evidence, but no stage metrics exist and no 4.1.3 request after failover was sampled, so the version effect is not fully excluded.",
+        "evidence_ids": [
+          "E15",
+          "E18",
+          "E36",
+          "E10",
+          "E11"
+        ]
+      }
+    ],
+    "missing_data": [
+      "pricing-cache metrics and logs for 08-21 12:30-14:30Z (latency, evictions, connections, failover timeline) to confirm the cache-miss mechanism",
+      "rates-db query-level data (slow query logs, connection counts) to confirm miss-driven load",
+      "pricing-svc error-rate and timeout series, and the number of requests that returned partial results, to size the impact",
+      "Search-api latency and error series split by version (4.2.0 vs 4.1.3) and by cache hit or miss, to separate the version effect from the cache effect",
+      "Rollout scope for 4.2.0 (percentage of traffic and pods over time) to check the exposure at 13:20Z",
+      "pricing-svc and rates-db metrics for 08-20 14:00 to 08-21 12:30Z, to test the 2.8.4 deploy (H3) properly",
+      "Feature-store health metrics and client error logs to close H2",
+      "Alert history for the window (not queried)"
+    ],
+    "gaps": [
+      "I did not query metrics or logs, so I have not confirmed the 4.2.0 rollout percentage, search-api latency by version, or whether pricing-svc latency rose after the 2.8.4 deploy.",
+      "Feature-store service health and client error logs were not checked, so H2 is only weakly tested by the absence of server-side changes.",
+      "The 4.2.0 change record has no rollout scope, and the 2.8.4 change record has no details. Both need confirming from the deploy system or metrics.",
+      "The pricing-cache failover is recorded by ElastiCache; whether pricing-svc or search-api actually saw cache misses or timeouts from it still needs checking in metrics or logs.",
+      "Infra events for search-api are empty. That may mean nothing happened, or that the source does not cover search-api pods. I did not cross-check another source for this.",
+      "No check of the pricing-svc 2.8.4 deploy on 08-20 at 15:05Z (H3): no infra-event or deploy query covered 08-20 and no pricing-svc metrics were queried.",
+      "No pricing-svc or pricing-cache metrics (latency, hit rate, connections) were queried, so H4 cannot be checked against saturation or cache hit-rate data.",
+      "No search-api or feature-store metrics before 12:30Z were returned, so the pre-13:12 baseline for 08-20 and the earlier part of 08-21 is missing.",
+      "No 4.1.3 trace was sampled after the 13:18Z failover, so the 4.2.0 version effect cannot be separated from the cache-miss effect (all sampled slow traces are 4.2.0 with cache=miss).",
+      "No alert query was run, so it is unknown which alerts fired and when.",
+      "The feature-store service has no metrics, logs, or spans in the window, so H2 (feature-store client 3.1 incompatibility) is neither confirmed nor ruled out.",
+      "pricing-cache has no metrics at all in the window (empty for all queries), so its latency, errors and saturation are unknown. The cache hit ratio drop could be a cache eviction/flush, a restart, or a key/config change; I could not check which.",
+      "pricing-svc and rates-db returned data only from 2026-08-21 12:30Z onward, even when the requested range started 2026-08-20 14:00Z. The 08-20 14:00 to 08-21 12:30 span is absent, so I could not check the 08-20 15:05Z pricing-svc 2.8.4 deploy (H3) or any pricing-svc change before 08-21. H3 is untested, not refuted.",
+      "No error-rate or saturation series were available for pricing-svc (only latency_p99 and cache_hit_ratio), and no traces were pulled, so pricing-svc errors and timeouts toward search-api are unverified.",
+      "The search-api, feature-store and ranking-model signals (H1, H2) are outside my scope and were not checked. Rollback decision is not made here.",
+      "Trace samples are small (3 slow search-api traces, 1 pre-change trace, 0 traces for 08-20). I cannot estimate what share of requests are slow or partial from traces. Share has to come from metrics.",
+      "Only 1 of the 3 sampled traces (call-0024's t-c14-slow-1) has a rates-db span, so I cannot show rates-db dominance across requests.",
+      "The 4.2.0 traces are all cache=miss with pricing timeouts. I did not sample a 4.2.0 request with cache=hit, or a 4.1.3 request after the 13:18 failover, so the version effect cannot be separated from the cache-miss effect using traces.",
+      "H3 (pricing-svc 2.8.4 deploy 08-20 15:05Z): no pricing-svc traces, logs or metrics exist for 08-20 14:00 to 08-21 12:30Z, so the deploy window is untested. The only pre-onset pricing evidence (13:05 trace, 14 ms, cache hit) argues against H3 as the trigger of the 13:20 step, but it does not clear the 2.8.4 build over the whole 22 hours.",
+      "H2 (feature-store client 3.1): no feature-store spans or error logs were found in the sampled data. This is an absence in a small sample, not a proof of health. Feature-store has no metrics or logs in the window (earlier findings).",
+      "The pricing-svc WARN at 13:21:12Z reports cache miss ratio 0.85 but gives no cause (eviction, failover, or flush). pricing-cache has no metrics or logs in the window, so the failover-related cache state could not be checked from that source.",
+      "H1: traces show ranking.score at 33-35 ms (4.2.0) versus 41 ms (4.1.3), so no per-request ranking cost increase is visible. The sample is small and was not stratified by candidate size, so it does not rule out ranking latency at production candidate sizes."
+    ],
+    "security_findings": [],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "search-api 4.2.0 deploy recorded at 2026-08-21T13:12:00Z: learning-to-rank model v7 and feature-store client 2.9 -> 3.1. Change record says the offline benchmark puts ltr-v7 scoring at 30-40ms per query, same as v6. The change record has no rollout scope (percentage, pods, regions), so I could not confirm how much traffic ran on 4.2.0 when the 13:20 degradation began.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "pricing-svc 2.8.4 deploy recorded at 2026-08-20T15:05:00Z (described as 'structured logging fields'). That is about 22 hours before the 13:20 degradation on 08-21. No other pricing-svc change appears from 08-06 through 08-21T13:45Z. The change record has no rollout scope or details.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "No changes at all are recorded for feature-store in the full change history (unbounded range). The feature-store client was upgraded on the search-api side only, so a server-side feature-store change is not the trigger.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "ElastiCache events for pricing-cache: at 2026-08-21T13:02:14Z pricing-cache-002 started a full replica resync because its replication backlog was exceeded. At 13:17:42Z primary pricing-cache-001 failed health checks (host hardware fault) and failover began, promoting pricing-cache-002. At 13:18:31Z failover completed. Keys at promotion were 0.4M, against 9.8M on the previous primary, so the promoted cache is mostly cold. A replacement replica pricing-cache-003 is being created.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "No infra events are recorded for search-api in any range (entity search-api returned zero events). Between 08-20T14:00Z and 08-21T13:45Z, the only infra events are the pricing-cache events above, which fall before the reported 13:20 onset (resync 13:02, failover 13:17-13:18).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "Past incident PIR-2026-008 (2026-02-11): search p99 rose to 1.2s after a ranking model release. Root cause was ltr-v5 being about 3x slower than v4 on large candidate sets. It was rolled back and a scoring-latency benchmark was added to the release checklist. This shows ranking-model latency regressions have happened here before, but it is an analogue, not evidence about v7. The v7 benchmark was run offline and may not reflect production candidate sizes.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "Timing: the search-api 4.2.0 deploy (13:12:00Z) precedes the reported onset (~13:20Z) by about 8 minutes. The pricing-cache failover (13:17:42Z to 13:18:31Z) lands within about 2 minutes before onset. The pricing-svc 2.8.4 deploy is about 22 hours earlier, so it does not line up with onset.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "search-api latency_p99 was 296-312 ms in every 5-minute point from 12:30 to 13:15Z, then 2610 ms at 13:20Z and 2580-2850 ms through 14:00Z. The jump falls between the 13:15 and 13:20 samples.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "search-api error_rate was 0.2-0.3% from 12:30 to 13:15Z, rose to 5.1% at 13:20Z, peaked at 6.4% at 13:30Z, and was 4.4% at 14:00Z. request_rate stayed flat at about 840-862 rps throughout, and cpu_utilization fell from about 46% to about 38-41% after 13:20Z.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Rollout of search-api 4.2.0 (ltr-model v7, feature-store client 3.1) started at 13:12:05Z and completed at 13:16:40Z with 24/24 pods on 4.2.0.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "search-api logs show ERROR 'request deadline exceeded (2500ms) for GET /v2/search' at 13:22:03Z and 13:31:55Z, both tagged version 4.2.0. A WARN at 13:24:18Z reads 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates', also tagged 4.2.0.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0013",
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "Slow trace t-c14-slow-1 (13:24:02Z, 2511 ms, status error, search-api 4.2.0): the pricing-svc getQuotes span took 2460 ms with status error, error=timeout, cache=miss, quotes=40. The rates-db SELECT rate_quotes span took 2130 ms with status ok. The ranking.score span took 33 ms with model ltr-v7 and candidates_with_price=12.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "Slow trace t-c14-slow-2 (13:40:47Z, 2504 ms, status error, search-api 4.2.0): pricing-svc getQuotes took 2450 ms with error=timeout and cache=miss. ranking.score took 35 ms with model ltr-v7.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Pre-change control trace t-c14-before-1 (13:05:10Z, 214 ms, status ok, search-api 4.1.3, ltr-v6): pricing-svc getQuotes took 14 ms with cache=hit and quotes=40. ranking.score took 41 ms.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "The ranking.score span is 33-35 ms in the 4.2.0 slow traces versus 41 ms in the 4.1.3 pre-change trace, so the ltr-v7 ranking stage does not appear to add per-request scoring time in these samples. The 4.2.0 slow traces are dominated by the pricing-svc timeout span.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "No feature-store spans appear in any of the three sampled traces, and no search-api log line mentions a feature-store fetch error, feature client error, or retry. The only feature-store-related line is the 13:12:05Z rollout message naming 'feature-store client 3.1'.",
+        "tools": [
+          "get_traces",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0020",
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "feature-store returned no metric series for 10:00-14:00Z, and no WARN-or-higher log entries for 10:00-14:00Z.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0011",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "search-api has no stage-labeled metric series (no stage breakdown for feature-store, pricing, or ranking latency). The labels query for stage='*' returned empty for 13:00-14:00Z.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "ElastiCache event: pricing-cache-002 began a full resynchronization from primary at 13:02:14Z because the replication backlog was exceeded.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "ElastiCache events: pricing-cache-001 primary failed health checks (host hardware fault) at 13:17:42Z. Failover completed at 13:18:31Z, promoting pricing-cache-002. Keys at promotion were 0.4M, versus 9.8M reported by the previous primary. Replacement replica pricing-cache-003 was being created.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "The pricing-cache failover (13:17:42-13:18:31Z) and the 4.2.0 rollout (13:12:05-13:16:40Z) both occur before the 13:20Z latency and error jump. The 13:02 replica resync also precedes the jump. The 5-minute metric samples cannot order these events more finely.",
+        "tools": [
+          "get_infra_events",
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0013",
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "Data quality: the search-api metric query was requested for 10:00-14:00Z but returned data only from 12:30Z onward, so there is no search-api series for 10:00-12:30Z. The infra events query was requested from 12:00Z and returned events only between 13:02:14Z and 13:18:31Z. The search-api log query for 10:00-14:00Z returned entries only between 13:12:05Z and 13:31:55Z.",
+        "tools": [
+          "get_infra_events",
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0023",
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "pricing-svc latency_p99 was flat at about 38-44 ms from 12:30 to 13:15Z on 2026-08-21, then jumped to 2380 ms at 13:20Z and stayed between 2190 and 2460 ms through 14:00Z (slowly easing). The step is at 13:20Z, not at 13:12Z.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "pricing-svc cache_hit_ratio fell from about 0.96-0.97 (12:30-13:15Z) to 0.15 at 13:20Z, then recovered slowly to only 0.37 by 14:00Z. The drop coincides with the latency step.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "rates-db cpu_utilization rose from about 28-32% (12:30-13:15Z) to 96% at 13:20Z and stayed 94-97% through 14:00Z. The rates-db PostgresCPUHigh warning fired at 13:28Z.",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "Alerts in the window: SearchLatencyP99High (critical, search-api, firing 13:25Z, p99 above 1500 ms for 5 min) and PostgresCPUHigh (warning, rates-db, firing 13:28Z). No alerts were returned for pricing-svc or pricing-cache.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E27",
+        "summary": "Timing across the three services is aligned: the pricing-svc latency step, the cache hit ratio collapse and the rates-db CPU jump all start in the same 13:15-13:20Z sample window. The search-api 4.2.0 deploy at 13:12Z precedes this by about 8 minutes, so timing alone does not separate it from the cache/DB path.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E28",
+        "summary": "No pricing-svc latency_p99 points exist for 2026-08-20 14:00-17:00Z (the 15:05Z window). The series returned only the 2026-08-21 12:30Z onward range. The data is absent, so there is no evidence of a latency change at 15:05Z on 08-20 from metrics.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E29",
+        "summary": "pricing-cache returned no series at all (no metric names, no points) for the full window or for latency_p99 on 08-21 12:30-14:30Z. Its health cannot be assessed from metrics. The absence could be a missing metric source rather than a healthy service.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008",
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E30",
+        "summary": "Sampled slow search-api error traces (13:24:02Z, 2511 ms; 13:40:47Z, 2504 ms; both search-api 4.2.0, error=deadline_exceeded) each have a pricing-svc getQuotes span of about 2450-2460 ms with status error, error=timeout, cache=miss, quotes=40. The pricing-svc span is the dominant component of the latency in both traces. ranking.score is 33-35 ms in both.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0024",
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E31",
+        "summary": "The pre-change trace at 13:05:10Z (search-api 4.1.3, ltr-v6, 214 ms, status ok) has pricing-svc getQuotes at 14 ms with cache=hit and quotes=40. This is the only pricing-svc trace before the 13:20 step in the sample. It shows pricing-svc was fast before the cache collapse, including on the 2.8.4 build that had been deployed on 08-20.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E32",
+        "summary": "Only one slow trace (t-c14-slow-1, 13:24:02Z) has a rates-db 'SELECT rate_quotes' span, at 2130 ms with status ok. In that trace the rates-db time sits inside the pricing-svc timeout, consistent with cache misses sending pricing reads to rates-db. The second slow trace (13:40:47Z) has no rates-db span.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E33",
+        "summary": "pricing-svc WARN log at 13:21:12Z: 'cache miss ratio 0.85 over last 60s; serving from rates-db'. This is the only pricing-svc log line matching the version, config, cache, timeout, connect or deploy terms in 08-20 14:00 to 08-21 14:00. There is no log line for the 2.8.4 deploy or any pricing-svc startup or config change.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0026"
+        ]
+      },
+      {
+        "id": "E34",
+        "summary": "Partial results are tied to pricing timeouts. search-api WARN at 13:24:18Z (version 4.2.0): 'ranking stage returned partial results at deadline: ranked 12 of 40 candidates'. In trace t-c14-slow-1, candidates_with_price=12 out of 40 quotes, so 28 candidates lacked prices when the pricing call timed out. The ranking.score span itself is short (33-35 ms), so the truncation follows the missing pricing responses rather than ranking compute.",
+        "tools": [
+          "get_traces",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0027",
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E35",
+        "summary": "search-api ERROR logs for the window show 'request deadline exceeded' tagged 4.2.0. The only WARN in 12:00-14:00 about partial results is the 13:24:18Z ranking/partial line. No search-api log mentions a feature-store fetch, client error, or retry. Feature-store spans are absent from all sampled traces (slow and pre-change).",
+        "tools": [
+          "get_traces",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0027",
+          "call-0024",
+          "call-0025"
+        ]
+      },
+      {
+        "id": "E36",
+        "summary": "Trace sampling is sparse. search-api error traces in 13:12-14:00Z returned only 2 traces, below the limit of 50, and pricing-svc traces in 12:30-14:00Z returned only 3, all from 13:05-13:40Z. No traces exist for 08-20 or for the 13:00-13:05 interval. These samples cannot give the share of requests that were slow or partial, nor the pre-deploy (08-20 15:05Z) pricing latency. H3 is not tested by traces.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0024",
+          "call-0025"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 16,
+    "input_tokens": 134638,
+    "output_tokens": 31926,
+    "cache_read_tokens": 58303,
+    "cache_write_tokens": 48982,
+    "reasoning_tokens": 12299,
+    "cost_usd": 0.065458,
+    "unpriced_calls": 0,
+    "tool_calls": 27,
+    "latency_ms": 154381.23
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 2368,
+      "output_tokens": 2422,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1189,
+      "cost_usd": 0.001448,
+      "unpriced_calls": 0,
+      "tool_calls": 2,
+      "latency_ms": 10842.04
+    },
+    "change_history": {
+      "llm_calls": 3,
+      "input_tokens": 19348,
+      "output_tokens": 3321,
+      "cache_read_tokens": 11227,
+      "cache_write_tokens": 8113,
+      "reasoning_tokens": 880,
+      "cost_usd": 0.002787,
+      "unpriced_calls": 0,
+      "tool_calls": 7,
+      "latency_ms": 15763.53
+    },
+    "observability": {
+      "llm_calls": 5,
+      "input_tokens": 56077,
+      "output_tokens": 11485,
+      "cache_read_tokens": 26552,
+      "cache_write_tokens": 29509,
+      "reasoning_tokens": 3559,
+      "cost_usd": 0.009699,
+      "unpriced_calls": 0,
+      "tool_calls": 12,
+      "latency_ms": 48086.65
+    },
+    "dependency": {
+      "llm_calls": 4,
+      "input_tokens": 31894,
+      "output_tokens": 5186,
+      "cache_read_tokens": 20524,
+      "cache_write_tokens": 11360,
+      "reasoning_tokens": 680,
+      "cost_usd": 0.004218,
+      "unpriced_calls": 0,
+      "tool_calls": 6,
+      "latency_ms": 21532.41
+    },
+    "reasoning": {
+      "llm_calls": 1,
+      "input_tokens": 6905,
+      "output_tokens": 5039,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3904,
+      "cost_usd": 0.029767,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 29799.29
+    },
+    "critic": {
+      "llm_calls": 1,
+      "input_tokens": 7679,
+      "output_tokens": 1492,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1408,
+      "cost_usd": 0.015012,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 12911.76
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 10367,
+      "output_tokens": 2981,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 679,
+      "cost_usd": 0.002527,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 15445.55
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 14,
+      "input_tokens": 120054,
+      "output_tokens": 25395,
+      "cache_read_tokens": 58303,
+      "cache_write_tokens": 48982,
+      "reasoning_tokens": 6987,
+      "cost_usd": 0.020679,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 111670.18
+    },
+    "o4-mini-2025-04-16": {
+      "llm_calls": 2,
+      "input_tokens": 14584,
+      "output_tokens": 6531,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 5312,
+      "cost_usd": 0.044779,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 42711.05
+    }
+  },
+  "tool_calls": 27,
+  "latency_s": 117.126,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "web-frontend",
+            "kind": "service",
+            "depends_on": [
+              "search-api",
+              "deals-api"
+            ],
+            "notes": null
+          },
+          {
+            "name": "search-api",
+            "kind": "service",
+            "depends_on": [
+              "catalog-svc",
+              "pricing-svc",
+              "feature-store"
+            ],
+            "notes": "24 pods. Per-request deadline 2500ms. Ranks up to 40 hotels per query; ranking needs a live price quote for each."
+          },
+          {
+            "name": "deals-api",
+            "kind": "service",
+            "depends_on": [
+              "pricing-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "catalog-svc",
+            "kind": "service",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "feature-store",
+            "kind": "service",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "pricing-svc",
+            "kind": "service",
+            "depends_on": [
+              "pricing-cache",
+              "rates-db"
+            ],
+            "notes": "Serves rate quotes from pricing-cache; on a cache miss it queries rates-db and writes the result back."
+          },
+          {
+            "name": "pricing-cache",
+            "kind": "redis",
+            "depends_on": [],
+            "notes": "1 primary + 1 replica, automatic failover enabled."
+          },
+          {
+            "name": "rates-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-07T13:45:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-08-19T10:20:00Z",
+            "kind": "config",
+            "service": "deals-api",
+            "summary": "Raise deals page size from 20 to 30",
+            "author": "deals-team",
+            "details": null
+          },
+          {
+            "ts": "2026-08-20T15:05:00Z",
+            "kind": "deploy",
+            "service": "pricing-svc",
+            "summary": "pricing-svc 2.8.4 (structured logging fields)",
+            "author": "pricing-team",
+            "details": null
+          },
+          {
+            "ts": "2026-08-21T13:12:00Z",
+            "kind": "deploy",
+            "service": "search-api",
+            "summary": "search-api 4.2.0 - learning-to-rank model v7, feature-store client 2.9 -> 3.1",
+            "author": "search-team",
+            "details": "Offline benchmark shows ltr-v7 scoring at 30-40ms per query, same as v6."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-06T14:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-08-19T10:20:00Z",
+            "kind": "config",
+            "service": "deals-api",
+            "summary": "Raise deals page size from 20 to 30",
+            "author": "deals-team",
+            "details": null
+          },
+          {
+            "ts": "2026-08-20T15:05:00Z",
+            "kind": "deploy",
+            "service": "pricing-svc",
+            "summary": "pricing-svc 2.8.4 (structured logging fields)",
+            "author": "pricing-team",
+            "details": null
+          },
+          {
+            "ts": "2026-08-21T13:12:00Z",
+            "kind": "deploy",
+            "service": "search-api",
+            "summary": "search-api 4.2.0 - learning-to-rank model v7, feature-store client 2.9 -> 3.1",
+            "author": "search-team",
+            "details": "Offline benchmark shows ltr-v7 scoring at 30-40ms per query, same as v6."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T13:45:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-08-20T15:05:00Z",
+            "kind": "deploy",
+            "service": "pricing-svc",
+            "summary": "pricing-svc 2.8.4 (structured logging fields)",
+            "author": "pricing-team",
+            "details": null
+          },
+          {
+            "ts": "2026-08-21T13:12:00Z",
+            "kind": "deploy",
+            "service": "search-api",
+            "summary": "search-api 4.2.0 - learning-to-rank model v7, feature-store client 2.9 -> 3.1",
+            "author": "search-team",
+            "details": "Offline benchmark shows ltr-v7 scoring at 30-40ms per query, same as v6."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T13:45:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-21T13:02:14Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-002",
+            "reason": "ReplicaFullResync",
+            "message": "Replica pricing-cache-002 started a full resynchronization from primary (replication backlog exceeded)."
+          },
+          {
+            "ts": "2026-08-21T13:17:42Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-001",
+            "reason": "FailoverStarted",
+            "message": "Primary pricing-cache-001 failed health checks (host hardware fault). Promoting replica pricing-cache-002."
+          },
+          {
+            "ts": "2026-08-21T13:18:31Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-002",
+            "reason": "FailoverComplete",
+            "message": "pricing-cache-002 is now primary. Keys at promotion 0.4M (previous primary reported 9.8M). Replacement replica pricing-cache-003 is being created."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "ranking feature-store client"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-008",
+            "date": "2026-02-11T00:00:00Z",
+            "title": "Search latency after ranking model upgrade",
+            "summary": "Search p99 rose to 1.2s after a ranking model release.",
+            "root_cause": "ltr-v5 model was three times slower to score than v4 on large candidate sets.",
+            "resolution": "Rolled back the model; added a scoring-latency benchmark to the release checklist."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "pricing-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "pricing-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 38.0
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 41.0
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 39.0
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 42.0
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 39.0
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 41.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 39.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 2380.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 2450.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 2460.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 2410.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 2430.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 2380.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 2320.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 2260.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 2190.0
+              }
+            ]
+          },
+          {
+            "service": "pricing-svc",
+            "name": "cache_hit_ratio",
+            "unit": "ratio",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 0.96
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.96
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.97
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.96
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 0.15
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 0.17
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 0.19
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 0.22
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 0.25
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 0.28
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 0.31
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 0.34
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 0.37
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "cache_hit_ratio",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "pricing-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "rates-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "rates-db",
+            "name": "cpu_utilization",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 28.0
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 30.0
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 29.0
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 30.0
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 29.0
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 30.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 31.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 29.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 32.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 96.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 97.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 97.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 96.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 97.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 96.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 95.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 95.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 94.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "cpu_utilization",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T10:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "search-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "search-api",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 298.0
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 305.0
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 301.0
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 296.0
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 310.0
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 302.0
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 299.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 304.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 300.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 312.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 2610.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 2780.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 2850.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 2790.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 2820.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 2760.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 2700.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 2650.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 2580.0
+              }
+            ]
+          },
+          {
+            "service": "search-api",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 5.1
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 6.2
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 6.4
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 6.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 5.9
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 5.6
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 5.2
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 4.9
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 4.4
+              }
+            ]
+          },
+          {
+            "service": "search-api",
+            "name": "cpu_utilization",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 45.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 47.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 46.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 41.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 39.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 38.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 38.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 39.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 39.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 41.0
+              }
+            ]
+          },
+          {
+            "service": "search-api",
+            "name": "request_rate",
+            "unit": "rps",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-08-21T12:30:00Z",
+                "value": 840.0
+              },
+              {
+                "ts": "2026-08-21T12:35:00Z",
+                "value": 852.0
+              },
+              {
+                "ts": "2026-08-21T12:40:00Z",
+                "value": 848.0
+              },
+              {
+                "ts": "2026-08-21T12:45:00Z",
+                "value": 861.0
+              },
+              {
+                "ts": "2026-08-21T12:50:00Z",
+                "value": 855.0
+              },
+              {
+                "ts": "2026-08-21T12:55:00Z",
+                "value": 849.0
+              },
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 858.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 862.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 851.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 857.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 860.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 853.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 849.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 858.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 861.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 855.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 850.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 857.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 862.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "cpu_utilization",
+            "labels": {}
+          },
+          {
+            "name": "request_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T10:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "feature-store"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T10:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "feature-store",
+        "level": "WARN",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T10:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "query": "feature|timeout|ranking|version|4.2.0|startup|config",
+        "service": "search-api",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-21T13:12:05Z",
+            "service": "search-api",
+            "level": "INFO",
+            "message": "rollout started for search-api 4.2.0 (ltr-model v7, feature-store client 3.1)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-08-21T13:16:40Z",
+            "service": "search-api",
+            "level": "INFO",
+            "message": "rollout complete: 24/24 pods on 4.2.0",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-08-21T13:22:03Z",
+            "service": "search-api",
+            "level": "ERROR",
+            "message": "request deadline exceeded (2500ms) for GET /v2/search",
+            "attrs": {
+              "version": "4.2.0",
+              "route": "/v2/search"
+            }
+          },
+          {
+            "ts": "2026-08-21T13:24:18Z",
+            "service": "search-api",
+            "level": "WARN",
+            "message": "ranking stage returned partial results at deadline: ranked 12 of 40 candidates",
+            "attrs": {
+              "version": "4.2.0"
+            }
+          },
+          {
+            "ts": "2026-08-21T13:31:55Z",
+            "service": "search-api",
+            "level": "ERROR",
+            "message": "request deadline exceeded (2500ms) for GET /v2/search",
+            "attrs": {
+              "version": "4.2.0",
+              "route": "/v2/search"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-20T17:00:00Z",
+        "service": "pricing-svc",
+        "name": "latency_p99"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "pricing-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": []
+          }
+        ],
+        "available_series": [
+          {
+            "name": "latency_p99",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "query_metrics",
+      "args": {
+        "service": "pricing-cache",
+        "name": "latency_p99"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T14:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-08-21T13:25:00Z",
+            "name": "SearchLatencyP99High",
+            "severity": "critical",
+            "entity": "search-api",
+            "state": "firing",
+            "summary": "search-api p99 latency above 1500ms for 5 minutes"
+          },
+          {
+            "ts": "2026-08-21T13:28:00Z",
+            "name": "PostgresCPUHigh",
+            "severity": "warning",
+            "entity": "rates-db",
+            "state": "firing",
+            "summary": "rates-db CPU above 85% for 5 minutes"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_infra_events",
+      "args": {
+        "entity": "search-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_infra_events",
+      "args": {
+        "entity": "pricing-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-21T13:02:14Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-002",
+            "reason": "ReplicaFullResync",
+            "message": "Replica pricing-cache-002 started a full resynchronization from primary (replication backlog exceeded)."
+          },
+          {
+            "ts": "2026-08-21T13:17:42Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-001",
+            "reason": "FailoverStarted",
+            "message": "Primary pricing-cache-001 failed health checks (host hardware fault). Promoting replica pricing-cache-002."
+          },
+          {
+            "ts": "2026-08-21T13:18:31Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-002",
+            "reason": "FailoverComplete",
+            "message": "pricing-cache-002 is now primary. Keys at promotion 0.4M (previous primary reported 9.8M). Replacement replica pricing-cache-003 is being created."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_changes",
+      "args": {
+        "service": "feature-store"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "search-api",
+        "limit": 30
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c14-before-1",
+            "start": "2026-08-21T13:05:10Z",
+            "duration_ms": 214.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 214.0,
+                "status": "ok",
+                "attrs": {
+                  "version": "4.1.3"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 14.0,
+                "status": "ok",
+                "attrs": {
+                  "cache": "hit",
+                  "quotes": 40
+                }
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 41.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v6"
+                }
+              }
+            ]
+          },
+          {
+            "trace_id": "t-c14-slow-1",
+            "start": "2026-08-21T13:24:02Z",
+            "duration_ms": 2511.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 2511.0,
+                "status": "error",
+                "attrs": {
+                  "version": "4.2.0",
+                  "error": "deadline_exceeded"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 2460.0,
+                "status": "error",
+                "attrs": {
+                  "cache": "miss",
+                  "quotes": 40,
+                  "error": "timeout"
+                }
+              },
+              {
+                "service": "rates-db",
+                "operation": "SELECT rate_quotes",
+                "duration_ms": 2130.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 33.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v7",
+                  "candidates_with_price": 12
+                }
+              }
+            ]
+          },
+          {
+            "trace_id": "t-c14-slow-2",
+            "start": "2026-08-21T13:40:47Z",
+            "duration_ms": 2504.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 2504.0,
+                "status": "error",
+                "attrs": {
+                  "version": "4.2.0",
+                  "error": "deadline_exceeded"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 2450.0,
+                "status": "error",
+                "attrs": {
+                  "cache": "miss",
+                  "quotes": 40,
+                  "error": "timeout"
+                }
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 35.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v7"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T12:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "query": "feature[- ]?store|feature client|deadline|retry|timeout",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-21T13:12:05Z",
+            "service": "search-api",
+            "level": "INFO",
+            "message": "rollout started for search-api 4.2.0 (ltr-model v7, feature-store client 3.1)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-08-21T13:22:03Z",
+            "service": "search-api",
+            "level": "ERROR",
+            "message": "request deadline exceeded (2500ms) for GET /v2/search",
+            "attrs": {
+              "version": "4.2.0",
+              "route": "/v2/search"
+            }
+          },
+          {
+            "ts": "2026-08-21T13:24:18Z",
+            "service": "search-api",
+            "level": "WARN",
+            "message": "ranking stage returned partial results at deadline: ranked 12 of 40 candidates",
+            "attrs": {
+              "version": "4.2.0"
+            }
+          },
+          {
+            "ts": "2026-08-21T13:31:55Z",
+            "service": "search-api",
+            "level": "ERROR",
+            "message": "request deadline exceeded (2500ms) for GET /v2/search",
+            "attrs": {
+              "version": "4.2.0",
+              "route": "/v2/search"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "search-api",
+        "labels": {
+          "stage": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": [
+          {
+            "name": "latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "cpu_utilization",
+            "labels": {}
+          },
+          {
+            "name": "request_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T12:00:00Z",
+        "end": "2026-08-21T14:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-21T13:02:14Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-002",
+            "reason": "ReplicaFullResync",
+            "message": "Replica pricing-cache-002 started a full resynchronization from primary (replication backlog exceeded)."
+          },
+          {
+            "ts": "2026-08-21T13:17:42Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-001",
+            "reason": "FailoverStarted",
+            "message": "Primary pricing-cache-001 failed health checks (host hardware fault). Promoting replica pricing-cache-002."
+          },
+          {
+            "ts": "2026-08-21T13:18:31Z",
+            "source": "elasticache",
+            "entity": "pricing-cache-002",
+            "reason": "FailoverComplete",
+            "message": "pricing-cache-002 is now primary. Keys at promotion 0.4M (previous primary reported 9.8M). Replacement replica pricing-cache-003 is being created."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:12:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "search-api",
+        "status": "error",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c14-slow-1",
+            "start": "2026-08-21T13:24:02Z",
+            "duration_ms": 2511.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 2511.0,
+                "status": "error",
+                "attrs": {
+                  "version": "4.2.0",
+                  "error": "deadline_exceeded"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 2460.0,
+                "status": "error",
+                "attrs": {
+                  "cache": "miss",
+                  "quotes": 40,
+                  "error": "timeout"
+                }
+              },
+              {
+                "service": "rates-db",
+                "operation": "SELECT rate_quotes",
+                "duration_ms": 2130.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 33.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v7",
+                  "candidates_with_price": 12
+                }
+              }
+            ]
+          },
+          {
+            "trace_id": "t-c14-slow-2",
+            "start": "2026-08-21T13:40:47Z",
+            "duration_ms": 2504.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 2504.0,
+                "status": "error",
+                "attrs": {
+                  "version": "4.2.0",
+                  "error": "deadline_exceeded"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 2450.0,
+                "status": "error",
+                "attrs": {
+                  "cache": "miss",
+                  "quotes": 40,
+                  "error": "timeout"
+                }
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 35.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v7"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T12:30:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "service": "pricing-svc",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c14-before-1",
+            "start": "2026-08-21T13:05:10Z",
+            "duration_ms": 214.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 214.0,
+                "status": "ok",
+                "attrs": {
+                  "version": "4.1.3"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 14.0,
+                "status": "ok",
+                "attrs": {
+                  "cache": "hit",
+                  "quotes": 40
+                }
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 41.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v6"
+                }
+              }
+            ]
+          },
+          {
+            "trace_id": "t-c14-slow-1",
+            "start": "2026-08-21T13:24:02Z",
+            "duration_ms": 2511.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 2511.0,
+                "status": "error",
+                "attrs": {
+                  "version": "4.2.0",
+                  "error": "deadline_exceeded"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 2460.0,
+                "status": "error",
+                "attrs": {
+                  "cache": "miss",
+                  "quotes": 40,
+                  "error": "timeout"
+                }
+              },
+              {
+                "service": "rates-db",
+                "operation": "SELECT rate_quotes",
+                "duration_ms": 2130.0,
+                "status": "ok",
+                "attrs": {}
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 33.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v7",
+                  "candidates_with_price": 12
+                }
+              }
+            ]
+          },
+          {
+            "trace_id": "t-c14-slow-2",
+            "start": "2026-08-21T13:40:47Z",
+            "duration_ms": 2504.0,
+            "status": "error",
+            "spans": [
+              {
+                "service": "search-api",
+                "operation": "GET /v2/search",
+                "duration_ms": 2504.0,
+                "status": "error",
+                "attrs": {
+                  "version": "4.2.0",
+                  "error": "deadline_exceeded"
+                }
+              },
+              {
+                "service": "pricing-svc",
+                "operation": "getQuotes",
+                "duration_ms": 2450.0,
+                "status": "error",
+                "attrs": {
+                  "cache": "miss",
+                  "quotes": 40,
+                  "error": "timeout"
+                }
+              },
+              {
+                "service": "search-api",
+                "operation": "ranking.score",
+                "duration_ms": 35.0,
+                "status": "ok",
+                "attrs": {
+                  "model": "ltr-v7"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-20T14:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "query": "2\\.8\\.4|version|startup|config|cache|timeout|connect|deploy",
+        "service": "pricing-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-21T13:21:12Z",
+            "service": "pricing-svc",
+            "level": "WARN",
+            "message": "cache miss ratio 0.85 over last 60s; serving from rates-db",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T12:00:00Z",
+        "end": "2026-08-21T14:00:00Z",
+        "query": "partial|ranked|candidates|pricing|quotes|getQuotes",
+        "service": "search-api",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-08-21T13:24:18Z",
+            "service": "search-api",
+            "level": "WARN",
+            "message": "ranking stage returned partial results at deadline: ranked 12 of 40 candidates",
+            "attrs": {
+              "version": "4.2.0"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

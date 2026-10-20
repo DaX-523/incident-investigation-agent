@@ -1,0 +1,16 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.025285,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "It identifies the same originating change and mechanism as the key: enabling pdp_cache_include_reviews enlarged PDP cache entries, pushed Redis to maxmemory, caused evictions/hit-ratio collapse, and overloaded catalog-db so catalog-svc timed out behind the gateway.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [],
+    "unsupported_claims": [
+      "\"cached PDP values from about 4.1 KB to about 38 KB\"",
+      "\"Gateway CPU stayed at 26-32% throughout\""
+    ]
+  }
+}

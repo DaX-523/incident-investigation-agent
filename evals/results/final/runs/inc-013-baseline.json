@@ -1,0 +1,1596 @@
+{
+  "scenario": "inc-013",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Contacts marked UNREACHABLE without their phones ever ringing",
+    "outcome": "conclusive",
+    "summary": "Neither a carrier outage nor the 80-channel limit is the cause. Outbound call attempts exceeded the carrier's contracted 15 call-attempts/sec (all INVITEs counted). The carrier rejected the excess INVITEs with SIP 429 (about 71% of INVITEs on 10 March). The dialer treats each 429 as a failed attempt and retries after a fixed 120s. After 4 such failures the scheduler marks the contact UNREACHABLE, even though the call was never placed. So the contacts were marked UNREACHABLE without their phones ringing. Our own scheduler is the source of the excess: it dispatches new attempts at a configured 12/sec, and retries are added on top of that with no shared trunk-wide cap. Observed sustained load was about 990 INVITEs/min (~16.5/sec), above the 15/sec contract. Campaign K-2214 (21,000 contacts) started at 04:00 UTC on 10 March, and the 429 onset at ~05:00 coincides with its ramp-up. As of the last data point (12:00 UTC, 10 March) about 9,440 contacts had been marked UNREACHABLE, and the 429 ratio was still ~0.71.",
+    "root_cause": "Our outbound dispatch (campaign-scheduler new attempts at 12/sec plus retries, with no global cap against the carrier's 15 attempts/sec contract) exceeded the SIP trunk's call-attempt rate. The carrier answered the excess INVITEs with 429. The dialer counted each 429 as a failed attempt, and after 4 attempts the scheduler marked the contacts UNREACHABLE without ever placing a call.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "Attempt-rate overload: scheduler dispatch (new + retries) exceeds the carrier's 15 attempts/sec contract, so the carrier returns 429; 429s are counted as failed attempts, producing false UNREACHABLE marks.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7",
+          "E8",
+          "E9"
+        ],
+        "contradicting_evidence": [
+          "E10"
+        ],
+        "facts": [
+          {
+            "text": "Topology lists the carrier contract as 80 concurrent channels and 15 call attempts/sec, and the scheduler as dispatching at a configured 12 calls/sec.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "dialer sip_invite_rejection_ratio code=429 rose from 0.01 at 04:00 to 0.15 at 05:00, 0.59 at 06:00, and ~0.70 from 07:00 onward.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "sip_invites_per_min rose from 260 at 04:00 to ~990 from 07:00 onward (~16.5/sec), above the 15/sec contract.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Scheduler tick at 07:00 dispatched 213 attempts (new=120, retries=93), so retries add materially to the 12/sec new-attempt rate.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "Carrier vendor reply: trunk exceeded 15 attempts/sec (all INVITEs counted) from ~05:00 UTC on 10 March; excess INVITEs rejected with 429; asks us to reduce the attempt rate.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Carrier CDR summary: 71% of INVITE attempts rejected with 429 on 10 March; peak concurrent channels 24 of 80.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "Dialer logs show CT-55102 rejected with 429 on all 4 attempts (05:02, 05:04, 05:06, 05:08), and the scheduler marked it UNREACHABLE at 05:08:12.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Runbook: carrier 429/503 counts as a failed attempt, retried after a fixed 120s; contact marked UNREACHABLE after 4 attempts.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "contacts_marked_unreachable_total reached 9,440 by 12:00 on 10 March, growing ~730 per 30 minutes from 05:00.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "The 429 ratio jumped to 0.15 at 05:00 when the 1-minute average invite rate was only ~690/min (~11.5/sec). The average alone does not explain rejections at 05:00, so bursting within a tick or per-second counting at the carrier is a plausible but unverified explanation.",
+            "evidence_ids": [
+              "E10"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "Carrier outage or SBC failure rejecting calls. Refuted: the rejections are explicit 429 rate-limit responses, not 503 or outage errors, and the carrier itself attributes them to our attempt rate.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E11",
+          "E12"
+        ],
+        "facts": [
+          {
+            "text": "Carrier's own reply attributes the 429s to our attempt rate exceeding 15/sec, not to a carrier-side fault.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "The prior carrier outage (PIR-2026-004) presented as all INVITEs failing with 503, which does not match the 71% partial 429 pattern here.",
+            "evidence_ids": [
+              "E12"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "Exceeding the 80 concurrent-channel limit. Refuted: active calls stayed around 20-24 and the carrier CDR reports a peak of 24 concurrent channels.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E13",
+          "E14"
+        ],
+        "facts": [
+          {
+            "text": "dialer active_calls ranged 10-24 from 04:00 to 12:00 on 10 March, far below 80.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Carrier CDR: peak concurrent channels 24 of contracted 80.",
+            "evidence_ids": [
+              "E14"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "A scheduler configuration or deploy change raised the dispatch rate. Open: the only change in history is the K-2214 campaign start, and no effective-rate config line was found in scheduler logs, so the effective rate is unverified.",
+        "status": "open",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E15"
+        ],
+        "contradicting_evidence": [
+          "E16"
+        ],
+        "facts": [
+          {
+            "text": "Change history shows only the K-2214 scheduled job start at 04:00 UTC on 10 March; no config change recorded.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "Scheduler logs carry no config or startup line, and no config-type change is recorded.",
+            "evidence_ids": [
+              "E16"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Pause or throttle campaign K-2214 dispatch immediately so total trunk attempts, including retries, stay below 15/sec with margin (for example 10-12/sec). Verify the 429 ratio drops and invites/min stays under ~900.",
+        "rationale": "Stops the ongoing false UNREACHABLE marking and the carrier-side throttling. Current state is still at ~0.71 429 ratio and ~988 invites/min as of 12:00 on 10 March.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E3",
+          "E5",
+          "E10",
+          "E11",
+          "E13"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Identify contacts marked UNREACHABLE whose 4 attempts were all 429 rejections (never dialed), revert them to eligible, and re-queue them. Do this before the customer acts on the UNREACHABLE status.",
+        "rationale": "About 9,440 contacts were marked by 12:00 on 10 March. Those marks are false negatives and affect the enterprise customer's call list.",
+        "evidence_ids": [
+          "E4",
+          "E7",
+          "E9"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Enforce a trunk-wide attempts/sec budget in the scheduler and dialer that counts retries against the same cap (token bucket keyed on the carrier trunk, set below the 15/sec contract). Do not let the 12/sec new-attempt setting and retries add up independently.",
+        "rationale": "Retries (93 in one tick) currently push the total above the contract even though new attempts are configured at 12/sec.",
+        "evidence_ids": [
+          "E1",
+          "E4",
+          "E7"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "fix",
+        "action": "Treat 429 as a throttle signal: back off and re-dispatch without consuming one of the 4 contact attempts. Only count a SIP failure against a contact when the call actually reached the network or the carrier returned a non-throttle failure.",
+        "rationale": "Current runbook behaviour turns carrier throttling into contact-level UNREACHABLE status, which is the reported customer impact.",
+        "evidence_ids": [
+          "E7",
+          "E8"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Add alerts for sip_invite_rejection_ratio{code=429} above a few percent sustained for 5 minutes, and for invites/sec approaching the contracted 15/sec. Also add an alert on contacts_marked_unreachable rate.",
+        "rationale": "No alerts fired at all during a 70% rejection rate and ~9,000 false UNREACHABLE marks (get_alerts returned empty), so detection failed entirely.",
+        "evidence_ids": [
+          "E2",
+          "E3",
+          "E9",
+          "E10",
+          "E13"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "prevent",
+        "action": "Add a pre-launch capacity check for large campaigns (for example K-2214, 21,000 contacts) that compares projected attempts/sec, including retries, against the trunk contract. Log the effective dispatch rate at scheduler startup and on config change.",
+        "rationale": "The campaign was started with no visible check against the 15/sec contract, and the scheduler logs do not record its effective rate.",
+        "evidence_ids": [
+          "E15",
+          "E16"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Traces for dialer errors in the 05:00-05:30 window returned nothing (call-0023), so I could not confirm at the span level that the rejected INVITEs never reached the carrier as calls. This relies on the carrier's 429 semantics and the vendor reply.",
+      "No metrics or logs for sip-gateway or carrier-trunk (call-0006, call-0007, call-0010), so the gateway's view of the 429s is missing.",
+      "Metric series for contacts_marked_unreachable and the 429 ratio return only a single point at 12:00 on 10 March (call-0020, call-0021). I cannot tell whether the problem continued into 11 March or whether the data simply stops. The current state is unknown.",
+      "No scheduler startup or config log line was found, so the effective dispatch rate (12/sec as documented in topology) is unverified (call-0022).",
+      "The 1-minute invite-rate series returned no points for 04:00-05:30 (call-0018), so the exact per-second rate at onset is unknown.",
+      "The cause of the 429 onset at ~05:00, when the 1-minute average was ~11.5/sec, is not established. It is likely burst-within-tick or per-second carrier counting, but I did not verify this."
+    ],
+    "gaps": [
+      "get_external_report {'name': 'vendor status'} failed: not_found: no report named 'vendor status'; available: ['carrier_cdr_summary_2026-03-10', 'carrier_support_reply']"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Was campaign K-2214 paused or throttled after 12:00 UTC on 10 March? The data stops at 12:00, so I cannot confirm the current state.",
+      "What is the scheduler's effective dispatch rate and retry policy in production? Topology says 12 calls/sec, but no config line confirms it.",
+      "Which of the ~9,440+ contacts marked UNREACHABLE were never dialed (all attempts 429)? Can the customer's list be restored from attempt records?",
+      "Does the carrier count per second or per minute? The 429s started at an average of ~11.5/sec, so this matters for setting the safe throttle.",
+      "Should the carrier's 15 attempts/sec contract be renegotiated or the trunk upgraded if campaigns of this size are routine?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "Topology lists the carrier contract as 80 concurrent channels and 15 call attempts/sec, and the scheduler as dispatching at a configured 12 calls/sec.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0001"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "dialer sip_invite_rejection_ratio code=429 rose from 0.01 at 04:00 to 0.15 at 05:00, 0.59 at 06:00, and ~0.70 from 07:00 onward.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "sip_invites_per_min rose from 260 at 04:00 to ~990 from 07:00 onward (~16.5/sec), above the 15/sec contract.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Scheduler tick at 07:00 dispatched 213 attempts (new=120, retries=93), so retries add materially to the 12/sec new-attempt rate.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Carrier vendor reply: trunk exceeded 15 attempts/sec (all INVITEs counted) from ~05:00 UTC on 10 March; excess INVITEs rejected with 429; asks us to reduce the attempt rate.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "Carrier CDR summary: 71% of INVITE attempts rejected with 429 on 10 March; peak concurrent channels 24 of 80.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "Dialer logs show CT-55102 rejected with 429 on all 4 attempts (05:02, 05:04, 05:06, 05:08), and the scheduler marked it UNREACHABLE at 05:08:12.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0015",
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Runbook: carrier 429/503 counts as a failed attempt, retried after a fixed 120s; contact marked UNREACHABLE after 4 attempts.",
+        "tools": [
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "contacts_marked_unreachable_total reached 9,440 by 12:00 on 10 March, growing ~730 per 30 minutes from 05:00.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "The 429 ratio jumped to 0.15 at 05:00 when the 1-minute average invite rate was only ~690/min (~11.5/sec). The average alone does not explain rejections at 05:00, so bursting within a tick or per-second counting at the carrier is a plausible but unverified explanation.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "Carrier's own reply attributes the 429s to our attempt rate exceeding 15/sec, not to a carrier-side fault.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "The prior carrier outage (PIR-2026-004) presented as all INVITEs failing with 503, which does not match the 71% partial 429 pattern here.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "dialer active_calls ranged 10-24 from 04:00 to 12:00 on 10 March, far below 80.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005",
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Carrier CDR: peak concurrent channels 24 of contracted 80.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "Change history shows only the K-2214 scheduled job start at 04:00 UTC on 10 March; no config change recorded.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "Scheduler logs carry no config or startup line, and no config-type change is recorded.",
+        "tools": [
+          "get_changes",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0022",
+          "call-0003"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 9,
+    "input_tokens": 152449,
+    "output_tokens": 15563,
+    "cache_read_tokens": 119452,
+    "cache_write_tokens": 32977,
+    "reasoning_tokens": 4775,
+    "cost_usd": 0.013099,
+    "unpriced_calls": 0,
+    "tool_calls": 23,
+    "latency_ms": 68882.17
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 9,
+      "input_tokens": 152449,
+      "output_tokens": 15563,
+      "cache_read_tokens": 119452,
+      "cache_write_tokens": 32977,
+      "reasoning_tokens": 4775,
+      "cost_usd": 0.013099,
+      "unpriced_calls": 0,
+      "tool_calls": 23,
+      "latency_ms": 68882.17
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 9,
+      "input_tokens": 152449,
+      "output_tokens": 15563,
+      "cache_read_tokens": 119452,
+      "cache_write_tokens": 32977,
+      "reasoning_tokens": 4775,
+      "cost_usd": 0.013099,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 68882.17
+    }
+  },
+  "tool_calls": 23,
+  "latency_s": 68.923,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "campaign-scheduler",
+            "kind": "scheduler",
+            "depends_on": [
+              "dialer",
+              "campaign-db"
+            ],
+            "notes": "Dispatches due call attempts every 10s at a configured rate of 12 calls/sec"
+          },
+          {
+            "name": "dialer",
+            "kind": "worker",
+            "depends_on": [
+              "sip-gateway",
+              "campaign-db"
+            ],
+            "notes": "Places outbound calls"
+          },
+          {
+            "name": "sip-gateway",
+            "kind": "sip_gateway",
+            "depends_on": [
+              "carrier-trunk"
+            ],
+            "notes": null
+          },
+          {
+            "name": "carrier-trunk",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "Telecom carrier SIP trunk. Contract: 80 concurrent channels, 15 call attempts/sec"
+          },
+          {
+            "name": "campaign-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_alerts",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": []
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-03-10T04:00:00Z",
+            "kind": "scheduled_job",
+            "service": "campaign-scheduler",
+            "summary": "Campaign K-2214 (21,000 contacts) start",
+            "author": "customer",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "query_metrics",
+      "args": {
+        "service": "campaign-scheduler"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "campaign-scheduler",
+            "name": "contacts_marked_unreachable_total",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-03-10T04:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-03-10T04:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-03-10T05:00:00Z",
+                "value": 25.0
+              },
+              {
+                "ts": "2026-03-10T05:30:00Z",
+                "value": 240.0
+              },
+              {
+                "ts": "2026-03-10T06:00:00Z",
+                "value": 760.0
+              },
+              {
+                "ts": "2026-03-10T06:30:00Z",
+                "value": 1450.0
+              },
+              {
+                "ts": "2026-03-10T07:00:00Z",
+                "value": 2180.0
+              },
+              {
+                "ts": "2026-03-10T07:30:00Z",
+                "value": 2900.0
+              },
+              {
+                "ts": "2026-03-10T08:00:00Z",
+                "value": 3640.0
+              },
+              {
+                "ts": "2026-03-10T08:30:00Z",
+                "value": 4360.0
+              },
+              {
+                "ts": "2026-03-10T09:00:00Z",
+                "value": 5090.0
+              },
+              {
+                "ts": "2026-03-10T09:30:00Z",
+                "value": 5820.0
+              },
+              {
+                "ts": "2026-03-10T10:00:00Z",
+                "value": 6540.0
+              },
+              {
+                "ts": "2026-03-10T10:30:00Z",
+                "value": 7270.0
+              },
+              {
+                "ts": "2026-03-10T11:00:00Z",
+                "value": 7990.0
+              },
+              {
+                "ts": "2026-03-10T11:30:00Z",
+                "value": 8720.0
+              },
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 9440.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "contacts_marked_unreachable_total",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "service": "dialer"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "dialer",
+            "name": "sip_invite_rejection_ratio",
+            "unit": "ratio",
+            "labels": {
+              "code": "429"
+            },
+            "points": [
+              {
+                "ts": "2026-03-10T04:00:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-03-10T04:30:00Z",
+                "value": 0.04
+              },
+              {
+                "ts": "2026-03-10T05:00:00Z",
+                "value": 0.15
+              },
+              {
+                "ts": "2026-03-10T05:30:00Z",
+                "value": 0.38
+              },
+              {
+                "ts": "2026-03-10T06:00:00Z",
+                "value": 0.59
+              },
+              {
+                "ts": "2026-03-10T06:30:00Z",
+                "value": 0.69
+              },
+              {
+                "ts": "2026-03-10T07:00:00Z",
+                "value": 0.71
+              },
+              {
+                "ts": "2026-03-10T07:30:00Z",
+                "value": 0.7
+              },
+              {
+                "ts": "2026-03-10T08:00:00Z",
+                "value": 0.72
+              },
+              {
+                "ts": "2026-03-10T08:30:00Z",
+                "value": 0.7
+              },
+              {
+                "ts": "2026-03-10T09:00:00Z",
+                "value": 0.71
+              },
+              {
+                "ts": "2026-03-10T09:30:00Z",
+                "value": 0.69
+              },
+              {
+                "ts": "2026-03-10T10:00:00Z",
+                "value": 0.7
+              },
+              {
+                "ts": "2026-03-10T10:30:00Z",
+                "value": 0.72
+              },
+              {
+                "ts": "2026-03-10T11:00:00Z",
+                "value": 0.71
+              },
+              {
+                "ts": "2026-03-10T11:30:00Z",
+                "value": 0.7
+              },
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 0.71
+              }
+            ]
+          },
+          {
+            "service": "dialer",
+            "name": "sip_invite_rejection_ratio",
+            "unit": "ratio",
+            "labels": {
+              "code": "429",
+              "resolution": "1m"
+            },
+            "points": [
+              {
+                "ts": "2026-03-10T07:00:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:01:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:02:00Z",
+                "value": 0.81
+              },
+              {
+                "ts": "2026-03-10T07:03:00Z",
+                "value": 0.59
+              },
+              {
+                "ts": "2026-03-10T07:04:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:05:00Z",
+                "value": 0.57
+              },
+              {
+                "ts": "2026-03-10T07:06:00Z",
+                "value": 0.83
+              },
+              {
+                "ts": "2026-03-10T07:07:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:08:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:09:00Z",
+                "value": 0.59
+              },
+              {
+                "ts": "2026-03-10T07:10:00Z",
+                "value": 0.81
+              },
+              {
+                "ts": "2026-03-10T07:11:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:12:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:13:00Z",
+                "value": 0.57
+              },
+              {
+                "ts": "2026-03-10T07:14:00Z",
+                "value": 0.83
+              },
+              {
+                "ts": "2026-03-10T07:15:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:16:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:17:00Z",
+                "value": 0.59
+              },
+              {
+                "ts": "2026-03-10T07:18:00Z",
+                "value": 0.81
+              },
+              {
+                "ts": "2026-03-10T07:19:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:20:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:21:00Z",
+                "value": 0.57
+              },
+              {
+                "ts": "2026-03-10T07:22:00Z",
+                "value": 0.83
+              },
+              {
+                "ts": "2026-03-10T07:23:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:24:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:25:00Z",
+                "value": 0.59
+              },
+              {
+                "ts": "2026-03-10T07:26:00Z",
+                "value": 0.81
+              },
+              {
+                "ts": "2026-03-10T07:27:00Z",
+                "value": 0.58
+              },
+              {
+                "ts": "2026-03-10T07:28:00Z",
+                "value": 0.82
+              },
+              {
+                "ts": "2026-03-10T07:29:00Z",
+                "value": 0.57
+              }
+            ]
+          },
+          {
+            "service": "dialer",
+            "name": "sip_invites_per_min",
+            "unit": "per_min",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-03-10T04:00:00Z",
+                "value": 260.0
+              },
+              {
+                "ts": "2026-03-10T04:30:00Z",
+                "value": 480.0
+              },
+              {
+                "ts": "2026-03-10T05:00:00Z",
+                "value": 690.0
+              },
+              {
+                "ts": "2026-03-10T05:30:00Z",
+                "value": 820.0
+              },
+              {
+                "ts": "2026-03-10T06:00:00Z",
+                "value": 900.0
+              },
+              {
+                "ts": "2026-03-10T06:30:00Z",
+                "value": 960.0
+              },
+              {
+                "ts": "2026-03-10T07:00:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-03-10T07:30:00Z",
+                "value": 985.0
+              },
+              {
+                "ts": "2026-03-10T08:00:00Z",
+                "value": 992.0
+              },
+              {
+                "ts": "2026-03-10T08:30:00Z",
+                "value": 988.0
+              },
+              {
+                "ts": "2026-03-10T09:00:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-03-10T09:30:00Z",
+                "value": 986.0
+              },
+              {
+                "ts": "2026-03-10T10:00:00Z",
+                "value": 991.0
+              },
+              {
+                "ts": "2026-03-10T10:30:00Z",
+                "value": 989.0
+              },
+              {
+                "ts": "2026-03-10T11:00:00Z",
+                "value": 990.0
+              },
+              {
+                "ts": "2026-03-10T11:30:00Z",
+                "value": 987.0
+              },
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 988.0
+              }
+            ]
+          },
+          {
+            "service": "dialer",
+            "name": "active_calls",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-03-10T04:00:00Z",
+                "value": 10.0
+              },
+              {
+                "ts": "2026-03-10T04:30:00Z",
+                "value": 19.0
+              },
+              {
+                "ts": "2026-03-10T05:00:00Z",
+                "value": 24.0
+              },
+              {
+                "ts": "2026-03-10T05:30:00Z",
+                "value": 23.0
+              },
+              {
+                "ts": "2026-03-10T06:00:00Z",
+                "value": 21.0
+              },
+              {
+                "ts": "2026-03-10T06:30:00Z",
+                "value": 20.0
+              },
+              {
+                "ts": "2026-03-10T07:00:00Z",
+                "value": 22.0
+              },
+              {
+                "ts": "2026-03-10T07:30:00Z",
+                "value": 21.0
+              },
+              {
+                "ts": "2026-03-10T08:00:00Z",
+                "value": 20.0
+              },
+              {
+                "ts": "2026-03-10T08:30:00Z",
+                "value": 22.0
+              },
+              {
+                "ts": "2026-03-10T09:00:00Z",
+                "value": 23.0
+              },
+              {
+                "ts": "2026-03-10T09:30:00Z",
+                "value": 21.0
+              },
+              {
+                "ts": "2026-03-10T10:00:00Z",
+                "value": 20.0
+              },
+              {
+                "ts": "2026-03-10T10:30:00Z",
+                "value": 22.0
+              },
+              {
+                "ts": "2026-03-10T11:00:00Z",
+                "value": 21.0
+              },
+              {
+                "ts": "2026-03-10T11:30:00Z",
+                "value": 20.0
+              },
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 21.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "sip_invite_rejection_ratio",
+            "labels": {
+              "code": "429"
+            }
+          },
+          {
+            "name": "sip_invites_per_min",
+            "labels": {}
+          },
+          {
+            "name": "active_calls",
+            "labels": {}
+          },
+          {
+            "name": "sip_invites_per_min",
+            "labels": {
+              "resolution": "1m"
+            }
+          },
+          {
+            "name": "sip_invite_rejection_ratio",
+            "labels": {
+              "code": "429",
+              "resolution": "1m"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "service": "sip-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "service": "carrier-trunk"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "search_logs",
+      "args": {
+        "service": "campaign-scheduler",
+        "level": "DEBUG",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-03-10T04:00:02Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "campaign K-2214 started: 21,000 contacts due",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:08:12Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "contact CT-55102 exhausted 4/4 attempts -> UNREACHABLE",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T07:00:00Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "tick: dispatched 213 (new=120, retries=93) active=22",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T07:01:00Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "tick: dispatched 120 (new=120, retries=0) active=21",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-10T04:00:00Z",
+        "end": "2026-03-10T06:00:00Z",
+        "service": "dialer",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-03-10T05:02:11Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:04:11Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-10T07:00:00Z",
+        "service": "sip-gateway",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_external_report",
+      "args": {
+        "name": "vendor status"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1,
+      "data": null
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "get_external_report",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "carrier_cdr_summary_2026-03-10",
+            "kind": "carrier_cdr",
+            "generated_at": "2026-03-11T03:00:00Z",
+            "body": null
+          },
+          {
+            "name": "carrier_support_reply",
+            "kind": "vendor_email",
+            "generated_at": "2026-03-11T04:30:00Z",
+            "body": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_external_report",
+      "args": {
+        "name": "carrier_cdr_summary_2026-03-10"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "carrier_cdr_summary_2026-03-10",
+            "kind": "carrier_cdr",
+            "generated_at": "2026-03-11T03:00:00Z",
+            "body": "Trunk summary 2026-03-10 (UTC):\ncontracted concurrent channels: 80\npeak concurrent channels: 24\nINVITE attempts rejected (429): 71%\n"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "get_external_report",
+      "args": {
+        "name": "carrier_support_reply"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "carrier_support_reply",
+            "kind": "vendor_email",
+            "generated_at": "2026-03-11T04:30:00Z",
+            "body": "Your trunk exceeded its call-attempt rate (15 attempts/second, all INVITEs counted) for most of 10 March from ~05:00 UTC; excess INVITEs were rejected with 429. Please reduce your attempt rate."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "query": "429|rate|limit|channel|CPS|concurrent",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-03-10T05:02:11Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=1/4 -> retry in 120s",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:04:11Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=2/4 -> retry in 120s",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:06:12Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=3/4 -> retry in 120s",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:08:12Z",
+            "service": "dialer",
+            "level": "WARN",
+            "message": "INVITE rejected 429 Too Many Requests contact=CT-55102 attempt=4/4",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "429 carrier rate limit UNREACHABLE"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": [
+          {
+            "id": "rb-sip-errors",
+            "title": "Outbound SIP failures",
+            "body": "Carrier 429/503 count as a failed attempt; the attempt is retried after a fixed 120s. A contact is marked UNREACHABLE after 4 attempts."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-10T03:30:00Z",
+        "end": "2026-03-10T07:30:00Z",
+        "service": "campaign-scheduler",
+        "limit": 300
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-03-10T04:00:02Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "campaign K-2214 started: 21,000 contacts due",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T05:08:12Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "contact CT-55102 exhausted 4/4 attempts -> UNREACHABLE",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T07:00:00Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "tick: dispatched 213 (new=120, retries=93) active=22",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-03-10T07:01:00Z",
+            "service": "campaign-scheduler",
+            "level": "INFO",
+            "message": "tick: dispatched 120 (new=120, retries=0) active=21",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T04:00:00Z",
+        "end": "2026-03-10T05:30:00Z",
+        "service": "dialer",
+        "name": "sip_invites_per_min",
+        "labels": {
+          "resolution": "1m"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "dialer",
+            "name": "sip_invites_per_min",
+            "unit": "per_min",
+            "labels": {
+              "resolution": "1m"
+            },
+            "points": []
+          }
+        ],
+        "available_series": [
+          {
+            "name": "sip_invites_per_min",
+            "labels": {}
+          },
+          {
+            "name": "sip_invites_per_min",
+            "labels": {
+              "resolution": "1m"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "carrier 429 call attempt rate"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-004",
+            "date": "2026-01-22T00:00:00Z",
+            "title": "Outbound calls failing - carrier outage",
+            "summary": "All INVITEs failed with 503 for 40 minutes.",
+            "root_cause": "Carrier-side SBC failure.",
+            "resolution": "Resolved by carrier; no action on our side."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T12:00:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "campaign-scheduler"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "campaign-scheduler",
+            "name": "contacts_marked_unreachable_total",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 9440.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "contacts_marked_unreachable_total",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-03-10T12:00:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "service": "dialer"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "dialer",
+            "name": "sip_invite_rejection_ratio",
+            "unit": "ratio",
+            "labels": {
+              "code": "429"
+            },
+            "points": [
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 0.71
+              }
+            ]
+          },
+          {
+            "service": "dialer",
+            "name": "sip_invite_rejection_ratio",
+            "unit": "ratio",
+            "labels": {
+              "code": "429",
+              "resolution": "1m"
+            },
+            "points": []
+          },
+          {
+            "service": "dialer",
+            "name": "sip_invites_per_min",
+            "unit": "per_min",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 988.0
+              }
+            ]
+          },
+          {
+            "service": "dialer",
+            "name": "active_calls",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-03-10T12:00:00Z",
+                "value": 21.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "sip_invite_rejection_ratio",
+            "labels": {
+              "code": "429"
+            }
+          },
+          {
+            "name": "sip_invites_per_min",
+            "labels": {}
+          },
+          {
+            "name": "active_calls",
+            "labels": {}
+          },
+          {
+            "name": "sip_invites_per_min",
+            "labels": {
+              "resolution": "1m"
+            }
+          },
+          {
+            "name": "sip_invite_rejection_ratio",
+            "labels": {
+              "code": "429",
+              "resolution": "1m"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-03-09T00:00:00Z",
+        "end": "2026-03-11T06:00:00Z",
+        "query": "config|rate|calls/sec|cps|setting|startup|retry",
+        "service": "campaign-scheduler",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-03-10T05:00:00Z",
+        "end": "2026-03-10T05:30:00Z",
+        "service": "dialer",
+        "status": "error",
+        "limit": 10
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    }
+  ]
+}

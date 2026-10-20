@@ -1,0 +1,18 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.013938,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same originating change and mechanism as the key: checkout-svc v2.14.0 changed formatPrice to read cart.currency.code, which is undefined on legacy v1 carts and throws a TypeError. That matches the answer key's checkout-svc v2.14.0 / src/pricing/format.ts failure path.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": [
+      "\"orders-db latency change\"",
+      "\"No infra events, payments-svc 5xx (flat at 0.1%), or orders-db latency change coincide with the onset\""
+    ]
+  }
+}

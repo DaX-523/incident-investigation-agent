@@ -1,0 +1,1610 @@
+{
+  "scenario": "inc-008",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Orders stuck in \"Processing\", confirmation emails not sent",
+    "outcome": "inconclusive",
+    "summary": "Orders stuck in \"Processing\" and missing confirmation emails are best explained by orders-worker-7 crash-looping (exit code 1) since about 13:17-13:20. Because orders-worker-N is statically bound to Kafka partition N and there is no dead-letter queue, partition 7 of order-events has stopped being consumed; consumer lag on partition 7 rises steadily to about 505 by 14:05. Orders on that partition never reach orders-db or notification-svc, which explains the stuck orders and missing emails. The checkout-svc v4.1.0 deploy at 13:05 is the leading suspect for the poison message, but I could not confirm the crash cause: logging-es timed out on every log query. The Kafka broker-2 restart at 13:28 does not explain the onset, since the partition 7 lag and the first worker-7 crash both precede it. A second pod, orders-worker-2, began crash-looping at about 13:52, and its cause is also unconfirmed. No alert fired for consumer lag or crash-looping; the only alert was the Kafka under-replicated partitions warning.",
+    "root_cause": null,
+    "confidence": "low",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "A poison message (likely from the checkout-svc v4.1.0 gift-wrap change) crashes orders-worker-7, and the static partition assignment with no DLQ leaves partition 7 stalled; orders on that partition never reach processing or notification.",
+        "status": "supported",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ],
+        "contradicting_evidence": [
+          "E8",
+          "E9"
+        ],
+        "facts": [
+          {
+            "text": "Deploy checkout-svc v4.0.3 -> v4.1.0 (premium gift wrap option) at 13:05, the only checkout change in the window.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Kubernetes BackOff on orders-worker-7 at 13:17:52 with exit code 1, about 12 minutes after the deploy.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "container_restarts_total for orders-worker-7 climbs from 0 at 13:15 to 13 at 14:05, showing a continuous crash loop.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Consumer lag on order-events partition 7 starts at 14 around 13:20 and grows to 505 by 14:05, while the other partitions stay near 0-2 (other(max)).",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "The worker is statically assigned (orders-worker-N consumes partition N) and has no dead-letter queue.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "The reported onset of about 13:20 matches the partition 7 lag onset and the crash loop onset.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "A trace of a checkout v4.1.0 order on partition 5 completed OK through orders-worker, so the new version is not universally broken.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "No log lines are available showing the exception or the offending message, because logging-es timed out on every query.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Only one successful sample of a v4.1.0 trace was returned, so the claim that gift-wrap orders trigger the crash is not directly tested.",
+            "evidence_ids": [
+              "E9"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "The Kafka broker-2 rolling restart (JVM patch) at 13:28 caused the consumer stall or crash loops.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E10"
+        ],
+        "contradicting_evidence": [
+          "E11",
+          "E12"
+        ],
+        "facts": [
+          {
+            "text": "Under-replicated partitions on broker-2 spiked to 14 at 13:30 and cleared by 13:40, and the alert fired 13:31 and resolved 13:38.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "The partition 7 lag and the worker-7 first crash (13:17:52) both start before the 13:28 restart.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "Under-replication was brief and only on broker-2, and no broker errors are visible in the tool results.",
+            "evidence_ids": [
+              "E12"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The 13:52 worker-2 crash could still be linked to broker-2 leader moves, but this is untested."
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "A notification-svc or orders-db failure is making orders-worker fail on its dependency calls and crash the pods.",
+        "status": "open",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E13"
+        ],
+        "contradicting_evidence": [
+          "E14"
+        ],
+        "facts": [
+          {
+            "text": "orders-worker depends on notification-svc and orders-db, so a dependency failure would be on the processing path.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "A dependency outage would hit all 12 workers, but only partitions 7 and 2 show lag and only pods 7 and 2 restart.",
+            "evidence_ids": [
+              "E14"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Metrics for notification-svc, orders-db and checkout-svc returned nothing, so this hypothesis cannot be tested with the available data."
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Stop the bleeding: roll back checkout-svc v4.1.0 to v4.0.3 (or disable the gift-wrap flag) so no further messages that might crash the worker are produced, and check that the crash loop stops for new orders.",
+        "rationale": "The deploy at 13:05 is the only change before the first crash, and rolling back is a fast and reversible way to remove the suspected trigger. This does not clear the partitions already stalled.",
+        "evidence_ids": [
+          "E1",
+          "E3",
+          "E11",
+          "E14"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Unblock partitions 7 and 2 following the runbook: capture the failing offset from the crashing pods' logs (kubectl logs --previous, since logging-es is down), save the message to a side store, then skip that offset for the partition and let the worker drain the backlog.",
+        "rationale": "The runbook explicitly says to save the message before skipping it. Skipping without saving loses order data.",
+        "evidence_ids": [
+          "E2",
+          "E4",
+          "E6",
+          "E10",
+          "E11",
+          "E12",
+          "E14"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "mitigate",
+        "action": "Replay the order confirmations and reconcile the orders stuck in Processing for the affected partitions once the backlog drains. Identify affected orders by the offsets/partitions skipped or by orders-db status.",
+        "rationale": "Customers have no confirmation emails and orders are stuck; the stalled messages need to be processed or replayed to notification-svc.",
+        "evidence_ids": [
+          "E4",
+          "E5",
+          "E6",
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "fix",
+        "action": "Make orders-worker tolerant of poison messages: bounded retries, then route the message to a dead-letter topic and continue, and make the worker crash-loop visible rather than silently stalling a partition.",
+        "rationale": "Currently one bad message halts an entire partition with no DLQ, so one malformed event blocks all orders on that partition.",
+        "evidence_ids": [
+          "E2",
+          "E5",
+          "E6",
+          "E11",
+          "E13"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Add alerts on per-partition consumer lag growth for order-events, on container restart count and CrashLoopBackOff for orders-worker pods, and on confirmation-email volume dropping against order volume.",
+        "rationale": "The incident was only reported by customers ~45 minutes after onset; only Kafka URP alerts fired, and no lag or crash-loop alert appears in the alert data.",
+        "evidence_ids": [
+          "E3",
+          "E4",
+          "E6",
+          "E10",
+          "E11",
+          "E12",
+          "E14"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "prevent",
+        "action": "Add contract/schema tests and a canary stage for the checkout OrderPlaced event change (gift-wrap fields), and replay the new event shape against the worker in staging before release.",
+        "rationale": "The v4.1.0 deploy shipped with no visible validation against the consumer, and the trigger is most likely a new event shape.",
+        "evidence_ids": [
+          "E1",
+          "E7",
+          "E9",
+          "E11"
+        ]
+      },
+      {
+        "rank": 7,
+        "category": "prevent",
+        "action": "Restore logging-es and make the log pipeline resilient to its outage, since the incident response had no log access.",
+        "rationale": "Every log query timed out, which blocked identifying the exact exception and offset during the incident.",
+        "evidence_ids": [
+          "E8"
+        ]
+      }
+    ],
+    "missing_data": [
+      "logging-es is in maintenance and timed out on every search (orders-worker and notification-svc logs for 12:30-14:05 are unavailable), so the exception and failing offset are unknown.",
+      "No metrics for notification-svc, orders-db or checkout-svc (empty results), so confirmation-email delivery and DB health cannot be verified.",
+      "No message-level or offset-level data showing which orders sit on partition 7 or 2, or whether the poison message contains gift-wrap fields.",
+      "Reason for the worker-2 crash at 13:52 is unknown.",
+      "No alert exists for per-partition consumer lag or pod crash loops, so the detection gap is inferred from the alert list (only Kafka URP alerts returned).",
+      "Whether the affected orders are only those on partitions 7 and 2 is an assumption, not measured."
+    ],
+    "gaps": [
+      "search_logs {'start': '2026-08-21T12:30:00Z', 'end': '2026-08-21T14:05:00Z', 'service': 'orders-worker', 'level': 'WARN', 'limit': 200} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T12:30:00Z', 'end': '2026-08-21T14:05:00Z', 'service': 'notification-svc', 'level': 'WARN', 'limit': 200} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:15:00Z', 'end': '2026-08-21T13:25:00Z', 'query': 'orders-worker-7', 'limit': 50} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:15:00Z', 'end': '2026-08-21T13:30:00Z', 'service': 'orders-worker', 'level': 'ERROR', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)",
+      "search_logs {'start': '2026-08-21T13:00:00Z', 'end': '2026-08-21T14:05:00Z', 'query': 'gift', 'limit': 20} failed: timeout: ReadTimeout: logging-es search did not complete within 30s (cluster in maintenance)"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Can someone pull orders-worker-7 and orders-worker-2 container logs directly (kubectl logs --previous) for 13:15-13:25 and 13:50-14:00 to get the exception and the failing offset? logging-es is down.",
+      "Which partition does a sample of gift-wrap orders hash to? If the failing offset is a v4.1.0 OrderPlaced event, that confirms the poison-message trigger.",
+      "Is it safe to roll back checkout-svc to v4.0.3 now to stop new gift-wrap messages while the stalled partitions are handled?",
+      "Once the bad offset is saved, is it acceptable to skip it (offset reset on partition 7 and 2) and replay the affected orders' confirmation emails?",
+      "Is there a backlog of orders in Processing in orders-db that must be reconciled after the fix?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "Deploy checkout-svc v4.0.3 -> v4.1.0 (premium gift wrap option) at 13:05, the only checkout change in the window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "Kubernetes BackOff on orders-worker-7 at 13:17:52 with exit code 1, about 12 minutes after the deploy.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "container_restarts_total for orders-worker-7 climbs from 0 at 13:15 to 13 at 14:05, showing a continuous crash loop.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Consumer lag on order-events partition 7 starts at 14 around 13:20 and grows to 505 by 14:05, while the other partitions stay near 0-2 (other(max)).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "The worker is statically assigned (orders-worker-N consumes partition N) and has no dead-letter queue.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0001"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "The reported onset of about 13:20 matches the partition 7 lag onset and the crash loop onset.",
+        "tools": [
+          "get_infra_events",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012",
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "A trace of a checkout v4.1.0 order on partition 5 completed OK through orders-worker, so the new version is not universally broken.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "No log lines are available showing the exception or the offending message, because logging-es timed out on every query.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0010",
+          "call-0016",
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Only one successful sample of a v4.1.0 trace was returned, so the claim that gift-wrap orders trigger the crash is not directly tested.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "Under-replicated partitions on broker-2 spiked to 14 at 13:30 and cleared by 13:40, and the alert fired 13:31 and resolved 13:38.",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0002",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "The partition 7 lag and the worker-7 first crash (13:17:52) both start before the 13:28 restart.",
+        "tools": [
+          "get_changes",
+          "get_infra_events",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008",
+          "call-0012",
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "Under-replication was brief and only on broker-2, and no broker errors are visible in the tool results.",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0002",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "orders-worker depends on notification-svc and orders-db, so a dependency failure would be on the processing path.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0001"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "A dependency outage would hit all 12 workers, but only partitions 7 and 2 show lag and only pods 7 and 2 restart.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0012"
+        ]
+      }
+    ],
+    "stop_reason": "inconclusive"
+  },
+  "stop_reason": "inconclusive",
+  "usage": {
+    "llm_calls": 9,
+    "input_tokens": 122782,
+    "output_tokens": 10214,
+    "cache_read_tokens": 101203,
+    "cache_write_tokens": 21559,
+    "reasoning_tokens": 3539,
+    "cost_usd": 0.008817,
+    "unpriced_calls": 0,
+    "tool_calls": 23,
+    "latency_ms": 49233.63
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 9,
+      "input_tokens": 122782,
+      "output_tokens": 10214,
+      "cache_read_tokens": 101203,
+      "cache_write_tokens": 21559,
+      "reasoning_tokens": 3539,
+      "cost_usd": 0.008817,
+      "unpriced_calls": 0,
+      "tool_calls": 23,
+      "latency_ms": 49233.63
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 9,
+      "input_tokens": 122782,
+      "output_tokens": 10214,
+      "cache_read_tokens": 101203,
+      "cache_write_tokens": 21559,
+      "reasoning_tokens": 3539,
+      "cost_usd": 0.008817,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 49233.63
+    }
+  },
+  "tool_calls": 23,
+  "latency_s": 51.579,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "checkout-svc",
+            "kind": "service",
+            "depends_on": [
+              "kafka"
+            ],
+            "notes": "Produces OrderPlaced events to topic order-events (12 partitions)"
+          },
+          {
+            "name": "kafka",
+            "kind": "kafka",
+            "depends_on": [],
+            "notes": "3 brokers; topic order-events RF=3"
+          },
+          {
+            "name": "orders-worker",
+            "kind": "consumer",
+            "depends_on": [
+              "kafka",
+              "orders-db",
+              "notification-svc"
+            ],
+            "notes": "StatefulSet of 12 pods, static assignment: orders-worker-N consumes partition N. No dead-letter queue."
+          },
+          {
+            "name": "notification-svc",
+            "kind": "service",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "orders-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "logging-es",
+            "kind": "elasticsearch",
+            "depends_on": [],
+            "notes": "centralized log search backend"
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_alerts",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-08-21T13:31:00Z",
+            "name": "KafkaUnderReplicatedPartitions",
+            "severity": "warning",
+            "entity": "kafka/broker-2",
+            "state": "firing",
+            "summary": "14 under-replicated partitions"
+          },
+          {
+            "ts": "2026-08-21T13:38:00Z",
+            "name": "KafkaUnderReplicatedPartitions",
+            "severity": "warning",
+            "entity": "kafka/broker-2",
+            "state": "resolved",
+            "summary": "0 under-replicated partitions"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-08-21T10:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-08-21T13:05:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v4.0.3 -> v4.1.0: premium gift wrap option",
+            "author": "checkout-team",
+            "details": null
+          },
+          {
+            "ts": "2026-08-21T13:28:00Z",
+            "kind": "infra",
+            "service": "kafka",
+            "summary": "Planned rolling restart of broker 2 (JVM patch)",
+            "author": "data-platform",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T12:30:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "orders-worker",
+        "level": "WARN",
+        "limit": 200
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3,
+      "data": null
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T12:30:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "notification-svc",
+        "level": "WARN",
+        "limit": 200
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3,
+      "data": null
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T12:30:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "orders-worker",
+            "name": "container_restarts_total",
+            "unit": "count",
+            "labels": {
+              "pod": "orders-worker-7"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 6.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 7.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 8.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 10.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 11.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 12.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 13.0
+              }
+            ]
+          },
+          {
+            "service": "orders-worker",
+            "name": "container_restarts_total",
+            "unit": "count",
+            "labels": {
+              "pod": "orders-worker-2"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 6.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "container_restarts_total",
+            "labels": {
+              "pod": "orders-worker-7"
+            }
+          },
+          {
+            "name": "container_restarts_total",
+            "labels": {
+              "pod": "orders-worker-2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "service": "orders-worker",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "entity": "orders-worker"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-21T13:17:52Z",
+            "source": "kubernetes",
+            "entity": "pod/orders-worker-7",
+            "reason": "BackOff",
+            "message": "Back-off restarting failed container orders-worker (exit code 1)"
+          },
+          {
+            "ts": "2026-08-21T13:52:15Z",
+            "source": "kubernetes",
+            "entity": "pod/orders-worker-2",
+            "reason": "BackOff",
+            "message": "Back-off restarting failed container orders-worker (exit code 1)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T12:30:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "notification-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:15:00Z",
+        "end": "2026-08-21T13:25:00Z",
+        "query": "orders-worker-7",
+        "limit": 50
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3,
+      "data": null
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "service": "checkout-svc",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c08-produce-3",
+            "start": "2026-08-21T13:40:10Z",
+            "duration_ms": 280.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "checkout-svc",
+                "operation": "POST /checkout",
+                "duration_ms": 280.0,
+                "status": "ok",
+                "attrs": {
+                  "version": "v4.1.0"
+                }
+              },
+              {
+                "service": "kafka",
+                "operation": "produce order-events",
+                "duration_ms": 5.0,
+                "status": "ok",
+                "attrs": {
+                  "partition": 5
+                }
+              },
+              {
+                "service": "orders-worker",
+                "operation": "consume OrderPlaced",
+                "duration_ms": 40.0,
+                "status": "ok",
+                "attrs": {
+                  "partition": 5
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "kafka"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "kafka",
+            "name": "consumer_lag",
+            "unit": "messages",
+            "labels": {
+              "topic": "order-events",
+              "partition": "7"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 14.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 61.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 118.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 170.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 225.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 281.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 338.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 392.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 447.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 505.0
+              }
+            ]
+          },
+          {
+            "service": "kafka",
+            "name": "consumer_lag",
+            "unit": "messages",
+            "labels": {
+              "topic": "order-events",
+              "partition": "2"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 52.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 104.0
+              }
+            ]
+          },
+          {
+            "service": "kafka",
+            "name": "consumer_lag",
+            "unit": "messages",
+            "labels": {
+              "topic": "order-events",
+              "partition": "other(max)"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 1.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 2.0
+              }
+            ]
+          },
+          {
+            "service": "kafka",
+            "name": "under_replicated_partitions",
+            "unit": "count",
+            "labels": {
+              "broker": "2"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 14.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 0.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "consumer_lag",
+            "labels": {
+              "topic": "order-events",
+              "partition": "7"
+            }
+          },
+          {
+            "name": "consumer_lag",
+            "labels": {
+              "topic": "order-events",
+              "partition": "2"
+            }
+          },
+          {
+            "name": "consumer_lag",
+            "labels": {
+              "topic": "order-events",
+              "partition": "other(max)"
+            }
+          },
+          {
+            "name": "under_replicated_partitions",
+            "labels": {
+              "broker": "2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_changes",
+      "args": {
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-08-21T13:05:00Z",
+            "kind": "deploy",
+            "service": "checkout-svc",
+            "summary": "checkout-svc v4.0.3 -> v4.1.0: premium gift wrap option",
+            "author": "checkout-team",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "orders-worker crash loop poison message"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": [
+          {
+            "id": "rb-consumer-lag",
+            "title": "Kafka consumer lag",
+            "body": "Check broker health first. If a single consumer is crash-looping, inspect its logs for the failing offset; skip with `kcat`/offset reset only after saving the message."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "poison message consumer crash"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-061",
+            "date": "2026-07-30T00:00:00Z",
+            "title": "Order processing lag during Kafka maintenance",
+            "summary": "Consumer lag rose on several partitions during a broker restart; recovered after 12 minutes.",
+            "root_cause": "Leader elections during rolling restart.",
+            "resolution": "Restart broker during low traffic."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:15:00Z",
+        "end": "2026-08-21T13:30:00Z",
+        "service": "orders-worker",
+        "level": "ERROR",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3,
+      "data": null
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "orders-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T12:30:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "checkout-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": []
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "get_external_report",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": []
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "service": "orders-worker",
+        "limit": 30
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": [
+          {
+            "trace_id": "t-c08-produce-3",
+            "start": "2026-08-21T13:40:10Z",
+            "duration_ms": 280.0,
+            "status": "ok",
+            "spans": [
+              {
+                "service": "checkout-svc",
+                "operation": "POST /checkout",
+                "duration_ms": 280.0,
+                "status": "ok",
+                "attrs": {
+                  "version": "v4.1.0"
+                }
+              },
+              {
+                "service": "kafka",
+                "operation": "produce order-events",
+                "duration_ms": 5.0,
+                "status": "ok",
+                "attrs": {
+                  "partition": 5
+                }
+              },
+              {
+                "service": "orders-worker",
+                "operation": "consume OrderPlaced",
+                "duration_ms": 40.0,
+                "status": "ok",
+                "attrs": {
+                  "partition": 5
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "service": "orders-worker",
+        "labels": {
+          "pod": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "orders-worker",
+            "name": "container_restarts_total",
+            "unit": "count",
+            "labels": {
+              "pod": "orders-worker-7"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 6.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 7.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 8.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 9.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 10.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 11.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 12.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 13.0
+              }
+            ]
+          },
+          {
+            "service": "orders-worker",
+            "name": "container_restarts_total",
+            "unit": "count",
+            "labels": {
+              "pod": "orders-worker-2"
+            },
+            "points": [
+              {
+                "ts": "2026-08-21T13:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:25:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:45:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-08-21T13:55:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-08-21T14:00:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-08-21T14:05:00Z",
+                "value": 6.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "container_restarts_total",
+            "labels": {
+              "pod": "orders-worker-7"
+            }
+          },
+          {
+            "name": "container_restarts_total",
+            "labels": {
+              "pod": "orders-worker-2"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-08-21T13:00:00Z",
+        "end": "2026-08-21T14:05:00Z",
+        "query": "gift",
+        "limit": 20
+      },
+      "ok": false,
+      "error": "timeout",
+      "attempts": 3,
+      "data": null
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_topology",
+      "args": {
+        "service": "notification-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "orders-worker",
+            "kind": "consumer",
+            "depends_on": [
+              "kafka",
+              "orders-db",
+              "notification-svc"
+            ],
+            "notes": "StatefulSet of 12 pods, static assignment: orders-worker-N consumes partition N. No dead-letter queue."
+          },
+          {
+            "name": "notification-svc",
+            "kind": "service",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [
+          "orders-worker"
+        ],
+        "downstream": []
+      }
+    }
+  ]
+}

@@ -1,0 +1,1394 @@
+{
+  "scenario": "inc-009",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Search results missing products / some searches fail",
+    "outcome": "conclusive",
+    "summary": "Confirmed by logs and infra events: es-data-3 failed on hardware at 15:17Z (E3, E19). The es-products cluster went HealthRed at 15:18:30Z with two primary shards of the products index unassigned and no replicas available (E4, E18). Data-node count dropped from 3 to 2 and unassigned shards rose to 2 between the 15:20 and 15:30 metric samples (E13). search-svc then logged partial results at 15:19:02Z (2 of 10 shards failed, NoShardAvailableActionException) and a failed brand-filtered query at 15:21:40Z (E1, E2). This matches the reported missing brands and failed searches. The 09-16 change record says products was reindexed with number_of_replicas=0 as a cost saving, with replicas to be re-enabled after verification and follow-up SRCH-311 still open (E20). That setting was not directly verified via an index settings API or logs (E10, E12, E14), so it is treated as recorded, not observed. The web-frontend v12.3.0 deploy at 15:00Z is not supported as the cause: the errors are shard-availability failures, no search-svc change was recorded, and the deploy came 17 minutes before the node failure with no evidence it altered requests (E1, E2, E22, E23). The prometheus relabel at 12:55Z has no described path to search request handling (E24). No metrics cover the 15:00-16:00Z window and no error traces were returned, so failure rates and the missing-brand scope are not quantified (E6, E7, E17). Why es-data-3 failed, and whether the two primaries are still unassigned or recoverable, remain unverified.",
+    "root_cause": "Elasticsearch index products (10 primary shards, es-products cluster) was reindexed on 2026-09-16 with number_of_replicas=0 per change record (E20). When data node es-data-3 failed on hardware at 15:17Z (E3, E19), the two primary shards it held had no replica copies to promote. They became unassigned, and the cluster went HealthRed at 15:18:30Z (E4, E18). search-svc queries that fan out to all 10 shards then received partial results (2 of 10 shards failed) and, for brand-filtered queries routed to the unavailable shards, failed outright (E1, E2). This explains the missing brands and failed searches from about 15:20. The replicas=0 setting is per the change record and is not independently verified via index settings.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H2",
+        "statement": "es-products was reindexed on 2026-09-16 with number_of_replicas=0, so its primary shards have no replicas; a node loss or restart around 15:20 left some shards unassigned, so search-svc queries return partial results (missing brands) and fail when the required shards are unavailable.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E13",
+          "E14",
+          "E18",
+          "E19",
+          "E20",
+          "E22",
+          "E23"
+        ],
+        "contradicting_evidence": [
+          "E17"
+        ],
+        "facts": [
+          {
+            "text": "search-svc WARN at 15:19:02Z: 'partial results: 2 of 10 shards failed (NoShardAvailableActionException) index=products'. This is a shard-availability failure, not a malformed-parameter error.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "search-svc ERROR at 15:21:40Z: 'search failed: all shards failed for filtered query (brand filter routed to unavailable shards)'. The failure is tied to brand-filter routing to unavailable shards, which matches missing brands and failed searches.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "Infra event at 15:17:00Z (aws-ec2, instance/es-data-3): 'Instance status check failed (hardware); instance unreachable'.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Elasticsearch event at 15:18:30Z (cluster/es-products, HealthRed): 'node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)'. This shows the primaries had no replica copies to fail over to, which is the mechanism H2 proposes. It precedes the first search-svc shard failure at 15:19:02Z.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "es-products data_nodes dropped from 3.0 (sampled 15:20Z) to 2.0 (sampled 15:30Z) and unassigned_shards rose from 0 to 2.0 at the 15:30Z sample and stayed at 2 through 16:00Z. The node loss occurred between the 15:20 and 15:30 samples, matching the reported ~15:20 onset.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Two unassigned shards with one data node lost is consistent with primaries that have no replica copies (replicas=0), so a node loss leaves those shards unassigned. This is an inference; replica settings were not directly observed.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "es-products cluster went HealthRed at 2026-09-23T15:18:30Z: 'node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)'.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "AWS EC2 reported instance/es-data-3 'Instance status check failed (hardware); instance unreachable' at 2026-09-23T15:17:00Z, about 1.5 minutes before the cluster HealthRed event.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "Change record: es-products config change on 2026-09-16T11:00Z, 'Reindex products into new cluster with number_of_replicas=0 (cost saving)', author search-team; details say replicas were to be re-enabled after verification and follow-up ticket SRCH-311 is still open.",
+            "evidence_ids": [
+              "E20"
+            ]
+          },
+          {
+            "text": "The v12.3.0 deploy (15:00Z) precedes the es-data-3 failure (15:17Z) and cluster HealthRed (15:18:30Z) by 17-18 minutes; the deploy is not the only event before the failure, and the record offers no evidence that the deploy altered search requests.",
+            "evidence_ids": [
+              "E22"
+            ]
+          },
+          {
+            "text": "No search-svc changes recorded from 2026-09-10 to the window end (empty result).",
+            "evidence_ids": [
+              "E23"
+            ]
+          },
+          {
+            "text": "No error traces touching es-products between 15:00 and 16:00Z on 2026-09-23 (empty result), which is inconsistent with search failures being reported at es-products level; either traces are not captured for this path or failures are returned upstream in search-svc.",
+            "evidence_ids": [
+              "E17"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The number_of_replicas=0 setting from the 2026-09-16 reindex remained in effect through 2026-09-23 and was not reverted",
+          "search-svc routes queries to all primary shards and surfaces NoShardAvailableActionException as partial-result or failure"
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H1",
+        "statement": "web-frontend v12.3.0 (deployed 15:00, footer redesign) changed how it builds or sends search requests to search-svc (for example dropped or altered query/filter parameters), so search-svc returns fewer results and some requests are rejected.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E1",
+          "E2",
+          "E22",
+          "E23"
+        ],
+        "facts": [
+          {
+            "text": "search-svc WARN at 15:19:02Z: 'partial results: 2 of 10 shards failed (NoShardAvailableActionException) index=products'. This is a shard-availability failure, not a malformed-parameter error.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "search-svc ERROR at 15:21:40Z: 'search failed: all shards failed for filtered query (brand filter routed to unavailable shards)'. The failure is tied to brand-filter routing to unavailable shards, which matches missing brands and failed searches.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "The v12.3.0 deploy (15:00Z) precedes the es-data-3 failure (15:17Z) and cluster HealthRed (15:18:30Z) by 17-18 minutes; the deploy is not the only event before the failure, and the record offers no evidence that the deploy altered search requests.",
+            "evidence_ids": [
+              "E22"
+            ]
+          },
+          {
+            "text": "No search-svc changes recorded from 2026-09-10 to the window end (empty result).",
+            "evidence_ids": [
+              "E23"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "The prometheus relabel cleanup for the search namespace (2026-09-23 12:55) is not causal for user traffic; the observed search degradation comes from es-products or search-svc, and the relabel only affects how their metrics and alerts are labeled.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E24"
+        ],
+        "contradicting_evidence": [
+          "E4"
+        ],
+        "facts": [
+          {
+            "text": "Change record: prometheus 'Relabel config cleanup for search namespace' at 2026-09-23T12:55Z (author observability-team, details null). It is about 2h22m before the es-data-3 failure at 15:17Z. The record does not describe any effect on the search request path.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "Elasticsearch event at 15:18:30Z (cluster/es-products, HealthRed): 'node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)'. This shows the primaries had no replica copies to fail over to, which is the mechanism H2 proposes. It precedes the first search-svc shard failure at 15:19:02Z.",
+            "evidence_ids": [
+              "E4"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Prometheus relabel config changes affect only metrics labeling and not application traffic or code execution"
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Restore the two unassigned products primary shards: recover or replace es-data-3 so the shards can be reallocated, or restore the affected shards from the most recent snapshot if the local copies are lost. Confirm cluster health returns to green and search-svc stops logging NoShardAvailableActionException.",
+        "rationale": "The user-facing failures continue while two primaries are unassigned (E4, E13, E1, E2). Restoring shard availability addresses the immediate impact. Whether the data on es-data-3 is recoverable is unknown and must be checked first.",
+        "evidence_ids": [
+          "E3",
+          "E4",
+          "E13",
+          "E1",
+          "E2",
+          "E18",
+          "E19"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Verify the current number_of_replicas setting on products through the ES settings API, then set it to at least 1 and let replicas allocate. Close or act on SRCH-311.",
+        "rationale": "The replicas=0 setting is the condition that turned a single node loss into unassigned primaries (E20, E14). Enabling replicas removes this single point of failure. Verification first avoids acting on an unconfirmed setting.",
+        "evidence_ids": [
+          "E20",
+          "E14",
+          "E10",
+          "E12"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "prevent",
+        "action": "Add a change-review check that blocks production indices from being created or reindexed with number_of_replicas=0, and require a documented replica-restoration date for any temporary exception.",
+        "rationale": "The cost-saving change was made with replica restoration deferred to a follow-up ticket that remained open, so the risk was carried silently (E20). A review gate stops recurrence.",
+        "evidence_ids": [
+          "E20"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "detect",
+        "action": "Alert on es-products cluster status not green, unassigned shard count above zero, and data-node count dropping, and alert on search-svc partial_results_rate by index. Make sure metrics for the search path are retained and queryable for incident windows.",
+        "rationale": "No alert fired for the 09-16 to 09-23 16:00Z period, including around the node loss (E15). Metric and trace gaps also prevented quantifying the impact (E6, E7, E8).",
+        "evidence_ids": [
+          "E15",
+          "E13",
+          "E6",
+          "E7",
+          "E8"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Current cluster state and shard allocation after 15:18:30Z, including whether the two primaries are still unassigned and whether their data is recoverable",
+      "Index settings for products via the ES settings API showing number_of_replicas and its history since 2026-09-16",
+      "Cause of the es-data-3 failure (hardware event details, host logs, or node restart records)",
+      "search-svc and es-products metrics and logs covering 15:00-16:00Z, since the metrics returned only 12:00-12:50Z",
+      "Per-brand or per-query counts of failed and partial searches to size the missing-brand impact",
+      "Web-frontend v12.3.0 diff, to confirm or rule out changes to search request parameters (H1)",
+      "Prometheus relabel change details at 12:55Z, to confirm it has no effect on search traffic (H3)",
+      "Trace data for failing search requests, since the trace source returned no error traces in the window"
+    ],
+    "gaps": [
+      "query_metrics {'start': '2026-09-23T14:30:00Z', 'end': '2026-09-23T16:00:00Z', 'service': 'search-svc'}: returned data spans 2026-09-23T12:00:00+00:00..2026-09-23T12:50:00+00:00, outside the requested 2026-09-23T14:30:00+00:00..2026-09-23T16:00:00+00:00",
+      "H1: cannot compare web-frontend or search-svc request parameters before and after 15:00Z; web-frontend 'search' logs were empty and search-svc logs carry no parameter lines.",
+      "H1: no infra or deploy event for web-frontend v12.3.0 at 15:00Z was returned, so the deploy itself was not confirmed by this source.",
+      "H2: the 2026-09-16 reindex and number_of_replicas=0 setting are not confirmed by any log, event or metric returned.",
+      "H2: no metric data covers 15:00-16:00Z (metrics returned only 12:00-12:50Z), so the shard-failure rate and the missing-brand impact are not quantified.",
+      "H3: the prometheus relabel at 12:55Z was not queried. Infra events and logs show no change near 12:55Z, but the relabel's effect on traffic was not checked.",
+      "Trace data for error requests in the window was not available (zero results), so per-request span timing was not examined.",
+      "Did not verify index replica settings (number_of_replicas) directly; no tool exposes index settings. Need ES _settings or startup/index logs.",
+      "Did not identify why es-data node was lost (crash, restart, eviction) or which node; no log search tool was used within budget.",
+      "es-products metrics for 2026-09-16 to 2026-09-23 14:00Z were not returned, so the reindex date and any earlier shard issues are unchecked.",
+      "search-svc and web-frontend health/request metrics were out of my scope and not queried, so H1 was not tested here.",
+      "H3 (prometheus relabel) not tested by my evidence.",
+      "The web-frontend v12.3.0 diff was not retrievable, so it is unverified whether search query or filter parameters changed (H1 cannot be fully tested).",
+      "No search-svc or es-products logs or query-level errors were checked, so it is unverified that the partial results and failures come from unassigned shards (H2 mechanism).",
+      "No es-products shard allocation or recovery status after 15:18:30Z was checked, so it is unknown whether the unassigned shards stayed unassigned.",
+      "The prometheus relabel change has null details, so its effect on user traffic was not verified (H3 rests on the absence of a described traffic path).",
+      "Past-incident search for 'shard' failed with budget_exhausted (call_id 'budget'), so related precedent was not checked."
+    ],
+    "security_findings": [],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "search-svc WARN at 15:19:02Z: 'partial results: 2 of 10 shards failed (NoShardAvailableActionException) index=products'. This is a shard-availability failure, not a malformed-parameter error.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "search-svc ERROR at 15:21:40Z: 'search failed: all shards failed for filtered query (brand filter routed to unavailable shards)'. The failure is tied to brand-filter routing to unavailable shards, which matches missing brands and failed searches.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "Infra event at 15:17:00Z (aws-ec2, instance/es-data-3): 'Instance status check failed (hardware); instance unreachable'.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Elasticsearch event at 15:18:30Z (cluster/es-products, HealthRed): 'node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)'. This shows the primaries had no replica copies to fail over to, which is the mechanism H2 proposes. It precedes the first search-svc shard failure at 15:19:02Z.",
+        "tools": [
+          "get_infra_events",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Infra events across 2026-09-16T10:00Z to 2026-09-23T16:00Z list only two entries, both at 15:17-15:18Z on 2026-09-23 (es-data-3). No deploy, rollout, or reindex event for web-frontend or es-products appears in that range.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "Search for error-status traces on search-svc in 15:00-16:00Z returned zero traces. Other logs in the same window show errors, so the trace source is likely unsampled or incomplete; no trace-level timing or span data is available.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "Data quality: query_metrics for search-svc (error_rate and partial_results_rate) requested 14:30-16:00Z but returned points only from 12:00Z to 12:50Z (out_of_requested_range=true). Both series show error_rate 0.2-0.3% and partial_results_rate 0.0% for that span. No metric data covers the 15:00-16:00Z incident window, so the metrics cannot confirm or rule out the incident.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Filtered query for partial_results_rate by index label returned no series. Only the unlabeled partial_results_rate series exists, so per-index breakdown (products vs other) is unavailable.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0019"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "web-frontend log search for 'search' in 14:30-16:00Z returned zero entries. This may mean no matching lines or that web-frontend does not log search requests; it cannot be taken as evidence that request parameters are unchanged.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "es-products log search for 'replica' from 2026-09-16 09:00Z to 2026-09-23 16:00Z returned zero entries. Nothing in the logs confirms the 2026-09-16 reindex or number_of_replicas=0 setting. The H2 premise about the reindex is unverified by this source.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "Unfiltered search-svc logs 14:30-16:00Z contain only the two lines above (15:19:02Z WARN, 15:21:40Z ERROR). There are no request-parameter lines and no startup or config INFO lines before or after 15:00Z, so search-svc request parameters before and after 15:00 cannot be compared.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "es-products metrics returned only from 2026-09-23T14:00Z to 16:00Z despite requesting 2026-09-16 to 2026-09-23 range (quality flagged no out-of-range, but the earlier week has no points). Earlier-week coverage is therefore unverified; no evidence yet on whether replicas were 0 after the 09-16 reindex.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "es-products data_nodes dropped from 3.0 (sampled 15:20Z) to 2.0 (sampled 15:30Z) and unassigned_shards rose from 0 to 2.0 at the 15:30Z sample and stayed at 2 through 16:00Z. The node loss occurred between the 15:20 and 15:30 samples, matching the reported ~15:20 onset.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Two unassigned shards with one data node lost is consistent with primaries that have no replica copies (replicas=0), so a node loss leaves those shards unassigned. This is an inference; replica settings were not directly observed.",
+        "tools": [
+          "get_topology",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "No alerts fired for es-products between 2026-09-16 and 2026-09-23 16:00Z, including around the node loss; alerting did not catch the degradation.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "Topology: es-products has 3 data nodes (es-data-1..3) and index products with 10 primary shards; web-frontend -> search-svc -> es-products.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "No error traces touching es-products between 15:00 and 16:00Z on 2026-09-23 (empty result), which is inconsistent with search failures being reported at es-products level; either traces are not captured for this path or failures are returned upstream in search-svc.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "es-products cluster went HealthRed at 2026-09-23T15:18:30Z: 'node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)'.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "AWS EC2 reported instance/es-data-3 'Instance status check failed (hardware); instance unreachable' at 2026-09-23T15:17:00Z, about 1.5 minutes before the cluster HealthRed event.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "Change record: es-products config change on 2026-09-16T11:00Z, 'Reindex products into new cluster with number_of_replicas=0 (cost saving)', author search-team; details say replicas were to be re-enabled after verification and follow-up ticket SRCH-311 is still open.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "The only web-frontend change in the 14:00-16:30 window is the v12.3.0 deploy at 2026-09-23T15:00Z (footer redesign, details null). The change record shows no description of search-request changes. The deploy's diff was not retrievable with these tools.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0011",
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "The v12.3.0 deploy (15:00Z) precedes the es-data-3 failure (15:17Z) and cluster HealthRed (15:18:30Z) by 17-18 minutes; the deploy is not the only event before the failure, and the record offers no evidence that the deploy altered search requests.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0011",
+          "call-0020",
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "No search-svc changes recorded from 2026-09-10 to the window end (empty result).",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "Change record: prometheus 'Relabel config cleanup for search namespace' at 2026-09-23T12:55Z (author observability-team, details null). It is about 2h22m before the es-data-3 failure at 15:17Z. The record does not describe any effect on the search request path.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0003",
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "Past-incident search for 'replicas' returned no incidents; runbook search for 'search partial results replicas' returned no runbooks; the external report list was empty. No precedent or runbook in the organisation's records covers this pattern.",
+        "tools": [
+          "get_external_report",
+          "search_past_incidents",
+          "search_runbooks"
+        ],
+        "source_call_ids": [
+          "call-0013",
+          "call-0014",
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "Data quality: the es-products infra query (requested from 2026-09-16) returned only one event, at 15:18:30Z, so no earlier es-products infra events exist in the source for 09-16 to 09-23. The web-frontend change query returned only the 15:00Z deploy. The unfiltered change sweep (call-0003) requested from 2026-09-02 but its returned range begins 2026-09-16T11:00Z, so no changes before 09-16 are shown; this is plausible but not verified.",
+        "tools": [
+          "get_changes",
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0012",
+          "call-0011",
+          "call-0003"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 14,
+    "input_tokens": 87643,
+    "output_tokens": 21644,
+    "cache_read_tokens": 43251,
+    "cache_write_tokens": 25323,
+    "reasoning_tokens": 10172,
+    "cost_usd": 0.045597,
+    "unpriced_calls": 0,
+    "tool_calls": 22,
+    "latency_ms": 114605.48
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 2213,
+      "output_tokens": 2547,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1506,
+      "cost_usd": 0.001495,
+      "unpriced_calls": 0,
+      "tool_calls": 2,
+      "latency_ms": 12424.34
+    },
+    "observability": {
+      "llm_calls": 4,
+      "input_tokens": 32459,
+      "output_tokens": 5312,
+      "cache_read_tokens": 21991,
+      "cache_write_tokens": 10456,
+      "reasoning_tokens": 1707,
+      "cost_usd": 0.004185,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 24626.12
+    },
+    "dependency": {
+      "llm_calls": 3,
+      "input_tokens": 17223,
+      "output_tokens": 2042,
+      "cache_read_tokens": 10293,
+      "cache_write_tokens": 6922,
+      "reasoning_tokens": 352,
+      "cost_usd": 0.001991,
+      "unpriced_calls": 0,
+      "tool_calls": 4,
+      "latency_ms": 10454.62
+    },
+    "change_history": {
+      "llm_calls": 3,
+      "input_tokens": 18922,
+      "output_tokens": 4026,
+      "cache_read_tokens": 10967,
+      "cache_write_tokens": 7945,
+      "reasoning_tokens": 1645,
+      "cost_usd": 0.003116,
+      "unpriced_calls": 0,
+      "tool_calls": 8,
+      "latency_ms": 18922.53
+    },
+    "reasoning": {
+      "llm_calls": 1,
+      "input_tokens": 4687,
+      "output_tokens": 2695,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 1984,
+      "cost_usd": 0.017014,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 18774.46
+    },
+    "critic": {
+      "llm_calls": 1,
+      "input_tokens": 5144,
+      "output_tokens": 2289,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 2112,
+      "cost_usd": 0.01573,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 15350.58
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 6995,
+      "output_tokens": 2733,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 866,
+      "cost_usd": 0.002066,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 14052.83
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 12,
+      "input_tokens": 77812,
+      "output_tokens": 16660,
+      "cache_read_tokens": 43251,
+      "cache_write_tokens": 25323,
+      "reasoning_tokens": 6076,
+      "cost_usd": 0.012853,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 80480.44
+    },
+    "o4-mini-2025-04-16": {
+      "llm_calls": 2,
+      "input_tokens": 9831,
+      "output_tokens": 4984,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 4096,
+      "cost_usd": 0.032744,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 34125.04
+    }
+  },
+  "tool_calls": 22,
+  "latency_s": 85.263,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "web-frontend",
+            "kind": "web",
+            "depends_on": [
+              "search-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "search-svc",
+            "kind": "service",
+            "depends_on": [
+              "es-products"
+            ],
+            "notes": null
+          },
+          {
+            "name": "es-products",
+            "kind": "elasticsearch",
+            "depends_on": [],
+            "notes": "3 data nodes (es-data-1..3); index products: 10 primary shards"
+          },
+          {
+            "name": "prometheus",
+            "kind": "monitoring",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-09T15:50:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-16T11:00:00Z",
+            "kind": "config",
+            "service": "es-products",
+            "summary": "Reindex products into new cluster with number_of_replicas=0 (cost saving)",
+            "author": "search-team",
+            "details": "Replicas were to be re-enabled after reindex verification; follow-up ticket SRCH-311 still open."
+          },
+          {
+            "ts": "2026-09-23T12:55:00Z",
+            "kind": "config",
+            "service": "prometheus",
+            "summary": "Relabel config cleanup for search namespace",
+            "author": "observability-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-23T15:00:00Z",
+            "kind": "deploy",
+            "service": "web-frontend",
+            "summary": "web-frontend v12.3.0 (footer redesign)",
+            "author": "web-team",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-02T10:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-16T11:00:00Z",
+            "kind": "config",
+            "service": "es-products",
+            "summary": "Reindex products into new cluster with number_of_replicas=0 (cost saving)",
+            "author": "search-team",
+            "details": "Replicas were to be re-enabled after reindex verification; follow-up ticket SRCH-311 still open."
+          },
+          {
+            "ts": "2026-09-23T12:55:00Z",
+            "kind": "config",
+            "service": "prometheus",
+            "summary": "Relabel config cleanup for search namespace",
+            "author": "observability-team",
+            "details": null
+          },
+          {
+            "ts": "2026-09-23T15:00:00Z",
+            "kind": "deploy",
+            "service": "web-frontend",
+            "summary": "web-frontend v12.3.0 (footer redesign)",
+            "author": "web-team",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-16T10:00:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "es-products"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "es-products",
+            "name": "unassigned_shards",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-23T14:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T14:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T14:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T14:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T14:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T14:50:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T15:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T15:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T15:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T15:30:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-23T15:40:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-23T15:50:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-23T16:00:00Z",
+                "value": 2.0
+              }
+            ]
+          },
+          {
+            "service": "es-products",
+            "name": "data_nodes",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-23T14:00:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T14:10:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T14:20:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T14:30:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T14:40:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T14:50:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T15:00:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T15:10:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T15:20:00Z",
+                "value": 3.0
+              },
+              {
+                "ts": "2026-09-23T15:30:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-23T15:40:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-23T15:50:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-09-23T16:00:00Z",
+                "value": 2.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "unassigned_shards",
+            "labels": {}
+          },
+          {
+            "name": "data_nodes",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-16T10:00:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "es-products"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": []
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "get_topology",
+      "args": {
+        "service": "es-products"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "web-frontend",
+            "kind": "web",
+            "depends_on": [
+              "search-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "search-svc",
+            "kind": "service",
+            "depends_on": [
+              "es-products"
+            ],
+            "notes": null
+          },
+          {
+            "name": "es-products",
+            "kind": "elasticsearch",
+            "depends_on": [],
+            "notes": "3 data nodes (es-data-1..3); index products: 10 primary shards"
+          }
+        ],
+        "upstream": [
+          "search-svc",
+          "web-frontend"
+        ],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-23T15:00:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "search-svc",
+        "level": "WARN",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-23T15:19:02Z",
+            "service": "search-svc",
+            "level": "WARN",
+            "message": "partial results: 2 of 10 shards failed (NoShardAvailableActionException) index=products",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-23T15:21:40Z",
+            "service": "search-svc",
+            "level": "ERROR",
+            "message": "search failed: all shards failed for filtered query (brand filter routed to unavailable shards)",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-23T15:00:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "search-svc",
+        "status": "error",
+        "limit": 30
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-16T10:00:00Z",
+        "end": "2026-09-23T16:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-23T15:17:00Z",
+            "source": "aws-ec2",
+            "entity": "instance/es-data-3",
+            "reason": "InstanceStatusCheckFailed",
+            "message": "Instance status check failed (hardware); instance unreachable"
+          },
+          {
+            "ts": "2026-09-23T15:18:30Z",
+            "source": "elasticsearch",
+            "entity": "cluster/es-products",
+            "reason": "HealthRed",
+            "message": "node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-23T14:30:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "search-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "search-svc",
+            "name": "error_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-23T12:00:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-23T12:10:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-23T12:20:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-23T12:30:00Z",
+                "value": 0.2
+              },
+              {
+                "ts": "2026-09-23T12:40:00Z",
+                "value": 0.3
+              },
+              {
+                "ts": "2026-09-23T12:50:00Z",
+                "value": 0.2
+              }
+            ]
+          },
+          {
+            "service": "search-svc",
+            "name": "partial_results_rate",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-09-23T12:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T12:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T12:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T12:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T12:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-09-23T12:50:00Z",
+                "value": 0.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "error_rate",
+            "labels": {}
+          },
+          {
+            "name": "partial_results_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-23T14:00:00Z",
+        "service": "web-frontend"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-09-23T15:00:00Z",
+            "kind": "deploy",
+            "service": "web-frontend",
+            "summary": "web-frontend v12.3.0 (footer redesign)",
+            "author": "web-team",
+            "details": null
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-16T00:00:00Z",
+        "entity": "es-products"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-23T15:18:30Z",
+            "source": "elasticsearch",
+            "entity": "cluster/es-products",
+            "reason": "HealthRed",
+            "message": "node es-data-3 left; 2 primary shards of [products] unassigned (no replicas available)"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "replicas"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": []
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "search partial results replicas"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_external_report",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-23T15:00:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "es-products",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-23T14:30:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "query": "search",
+        "service": "web-frontend",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-16T09:00:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "query": "replica",
+        "service": "es-products",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": []
+      }
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-23T14:30:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "search-svc",
+        "name": "partial_results_rate",
+        "labels": {
+          "index": "*"
+        }
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [],
+        "available_series": [
+          {
+            "name": "partial_results_rate",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-23T14:30:00Z",
+        "entity": "es-data-3"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": [
+          {
+            "ts": "2026-09-23T15:17:00Z",
+            "source": "aws-ec2",
+            "entity": "instance/es-data-3",
+            "reason": "InstanceStatusCheckFailed",
+            "message": "Instance status check failed (hardware); instance unreachable"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-10T00:00:00Z",
+        "service": "search-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": []
+      }
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-23T14:30:00Z",
+        "end": "2026-09-23T16:00:00Z",
+        "service": "search-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-09-23T15:19:02Z",
+            "service": "search-svc",
+            "level": "WARN",
+            "message": "partial results: 2 of 10 shards failed (NoShardAvailableActionException) index=products",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-09-23T15:21:40Z",
+            "service": "search-svc",
+            "level": "ERROR",
+            "message": "search failed: all shards failed for filtered query (brand filter routed to unavailable shards)",
+            "attrs": {}
+          }
+        ]
+      }
+    }
+  ]
+}

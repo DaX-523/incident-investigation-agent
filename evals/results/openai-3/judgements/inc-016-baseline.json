@@ -1,0 +1,13 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "cost_usd": 0.002885,
+  "verdict": {
+    "root_cause": "partial",
+    "root_cause_reason": "The report identifies the same failure mechanism\u2014tracking-db IOPS saturation causing slow queries and connection exhaustion\u2014but it does not name the originating backfill job/component that caused the saturation, so it is only a partial match to the key.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ]
+  }
+}

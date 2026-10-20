@@ -1,0 +1,13 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "cost_usd": 0.006557,
+  "verdict": {
+    "root_cause": "partial",
+    "root_cause_reason": "The report correctly identifies the consumer crash loop / partition-stall mechanism, but it stops at a generic \u2018specific orders\u2019 crash and does not identify the originating checkout-svc v4.1.0 schema/enum change or poison message that actually caused the failures. It is also explicitly inconclusive rather than a definitive root-cause finding.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      2
+    ]
+  }
+}

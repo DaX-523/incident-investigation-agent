@@ -1,0 +1,616 @@
+{
+  "scenario": "inc-003",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "openai",
+  "report": {
+    "incident_title": "API gateway p99 latency and 504s spiking",
+    "outcome": "conclusive",
+    "summary": "Gateway 5xx and high p99 latency were triggered by downstream delays, not by gateway load. At 18:30 a feature-flag rollout increased the size of catalog product-page cache entries (now including reviews). 45 min later Redis hit 100 % of its 8 GB limit, evicting hot keys (>5 k/s) and cutting the hit-ratio from 95 % to 40 %. Cache misses forced catalog-svc to fetch reviews from Postgres; DB CPU pegged at ~99 % and individual review queries took ~4.6 s. Catalog-svc\u2019s p99 therefore rose to the API-gateway timeout (5 s) and the gateway reported 504s. Gateway CPU stayed low, so scaling it would not have helped.\n\nRoot cause: Growth team\u2019s \u201cpdp_cache_include_reviews\u201d feature flag rollout increased cached value size, exhausting Redis and cascading latency to the database and gateway.",
+    "root_cause": "Feature flag pdp_cache_include_reviews increased cache value size, causing Redis memory exhaustion, evictions, low hit-ratio, DB overload and gateway timeouts.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "The feature-flag rollout that enlarged cache entries filled Redis memory, causing evictions, DB overload and end-user timeouts.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "Feature flag pdp_cache_include_reviews set from 0 %\u2192100 % at 18:30.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "Average value size for product:pdp keys grew from 35 KB to 38 KB after the flag.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "Redis used_memory rose steadily, reaching 100 % at 19:05; evictions spiked to >5 k/s and hit-ratio fell from 0.95\u21920.43.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "Catalog-svc p99 latency climbed to 5 s in step with Redis saturation.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "Catalog-db CPU jumped to 97\u201399 % once cache hit-ratio collapsed.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "Trace shows Redis miss followed by 4.6 s DB query, total request 5 s crossing gateway timeout.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "Gateway p99 latency and 504 % spike begin after Redis filled; gateway CPU remained ~26 %.",
+            "evidence_ids": [
+              "E7"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Redis eviction of hot keys caused cache misses; trace supports."
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "API gateway is CPU-bound and needs more replicas; scaling would fix latency.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E8"
+        ],
+        "facts": [
+          {
+            "text": "Gateway cpu_utilization stayed 26\u201332 %, well below saturation during incident.",
+            "evidence_ids": [
+              "E8"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "Independent Postgres performance regression (unrelated to cache) slowed catalog-svc.",
+        "status": "inconclusive",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E9"
+        ],
+        "contradicting_evidence": [
+          "E10"
+        ],
+        "facts": [
+          {
+            "text": "Catalog-db CPU high and slow queries observed.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "DB load increase correlated with Redis hit-ratio collapse; prior to that DB CPU normal.",
+            "evidence_ids": [
+              "E10"
+            ]
+          }
+        ],
+        "assumptions": [
+          "No separate DB changes found; but detailed slow-query log unavailable."
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Roll back feature flag pdp_cache_include_reviews to 0 % immediately.",
+        "rationale": "Restores smaller cache entries, frees Redis memory, restores hit ratio.",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Increase Redis maxmemory or cluster size from 8 GB\u219216 GB.",
+        "rationale": "Allows larger cache items without eviction storm.",
+        "evidence_ids": [
+          "E2",
+          "E3",
+          "E10"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "prevent",
+        "action": "Add alert on Redis used_memory_pct >90 % and on hit_ratio <80 %.",
+        "rationale": "Catch memory exhaustion before it cascades.",
+        "evidence_ids": [
+          "E2",
+          "E3",
+          "E10"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Add canary/bake period to feature-flag rollouts with cache impact metrics.",
+        "rationale": "Detect memory footprint change before 100 % rollout.",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "detect",
+        "action": "Instrument SLOs for catalog-svc and propagate to gateway timeouts.",
+        "rationale": "Earlier detection of upstream latency growth.",
+        "evidence_ids": [
+          "E4",
+          "E7",
+          "E8"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Slow-query log from Postgres to confirm which queries dominate.",
+      "Redis key count / ops_per_sec metrics to validate traffic volume vs memory."
+    ],
+    "gaps": [
+      "get_topology {'service': 'gateway'} failed: not_found: unknown service 'gateway'; known services: ['api-gateway', 'catalog-db', 'catalog-svc', 'redis-cache']"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Confirm if feature flag roll-back is acceptable to growth team.",
+      "How many reviews need to be cached to satisfy product requirement?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "Feature flag pdp_cache_include_reviews set from 0 %\u2192100 % at 18:30.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "Average value size for product:pdp keys grew from 35 KB to 38 KB after the flag.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "Redis used_memory rose steadily, reaching 100 % at 19:05; evictions spiked to >5 k/s and hit-ratio fell from 0.95\u21920.43.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0020",
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "Catalog-svc p99 latency climbed to 5 s in step with Redis saturation.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "Catalog-db CPU jumped to 97\u201399 % once cache hit-ratio collapsed.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "Trace shows Redis miss followed by 4.6 s DB query, total request 5 s crossing gateway timeout.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "Gateway p99 latency and 504 % spike begin after Redis filled; gateway CPU remained ~26 %.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Gateway cpu_utilization stayed 26\u201332 %, well below saturation during incident.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Catalog-db CPU high and slow queries observed.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0008",
+          "call-0011"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "DB load increase correlated with Redis hit-ratio collapse; prior to that DB CPU normal.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008",
+          "call-0007"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 22,
+    "input_tokens": 159890,
+    "output_tokens": 10247,
+    "cache_read_tokens": 141824,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 7936,
+    "cost_usd": 0.18902,
+    "unpriced_calls": 0,
+    "tool_calls": 21,
+    "latency_ms": 153864.67
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 22,
+      "input_tokens": 159890,
+      "output_tokens": 10247,
+      "cache_read_tokens": 141824,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 7936,
+      "cost_usd": 0.18902,
+      "unpriced_calls": 0,
+      "tool_calls": 21,
+      "latency_ms": 153864.67
+    }
+  },
+  "by_model": {
+    "o3-2025-04-16": {
+      "llm_calls": 22,
+      "input_tokens": 159890,
+      "output_tokens": 10247,
+      "cache_read_tokens": 141824,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 7936,
+      "cost_usd": 0.18902,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 153864.67
+    }
+  },
+  "tool_calls": 21,
+  "latency_s": 153.955,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {
+        "service": "gateway"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_topology",
+      "args": {
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "api-gateway",
+        "name": "http_request_duration_seconds"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "catalog-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "redis-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "catalog-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-02T00:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "service": "catalog-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:40:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "query": "OOM",
+        "service": "redis-cache",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:40:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "catalog-svc",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:05:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "query": "504",
+        "service": "api-gateway",
+        "level": "ERROR",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "redis-cache",
+        "name": "ops_per_sec"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "service": "catalog-svc",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:40:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "query": "slow",
+        "service": "catalog-db",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "catalog-db",
+        "name": "db_connections"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-01T00:00:00Z",
+        "service": "redis-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-02T00:00:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "catalog-svc",
+        "kind": "deploy"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "service": "redis-cache",
+        "name": "keys_count"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T10:00:00Z",
+        "end": "2026-09-02T19:00:00Z",
+        "service": "redis-cache",
+        "name": "used_memory_pct_of_maxmemory"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:50:00Z",
+        "end": "2026-09-02T20:00:00Z",
+        "query": "redis",
+        "service": "catalog-svc",
+        "level": "INFO",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    }
+  ]
+}

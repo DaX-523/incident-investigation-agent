@@ -1,0 +1,804 @@
+{
+  "scenario": "inc-016",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "openai",
+  "report": {
+    "incident_title": "Partners getting 5xx from the tracking API since ~09:00",
+    "outcome": "inconclusive",
+    "summary": "tracking-api 5xx were triggered by a sudden write-load spike that saturated the tracking-db\u2019s provisioned storage IOPS starting ~08:50 UTC.  Query latency rose from <10 ms to \u22481 s (call-0012), so each HTTP request held its DB connection much longer and the tracking-api pool filled up.  When FinOps lowered the pool ceiling from 50\u219240 at 08:55 UTC (call-0002) the pool immediately hit the new limit (call-0006) and requests began timing-out (wait_p99 \u22482 s, call-0005), pushing the error-rate above 12 % (call-0005) and firing the 5xx and DbPoolSaturated alerts (call-0003).  The pool change worsened the symptom but the underlying cause is the database IOPS saturation, not the pool size.",
+    "root_cause": null,
+    "confidence": "low",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "Database IOPS saturation caused slow queries; pool reduction only amplified the impact.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "tracking-db write_iops climbed from ~1.5 k to ~9.9 k between 08:50 and 09:00 and stayed pegged (provisioned limit 10 k).",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "tracking-db query_latency_p99 rose from 9 ms to 950 ms in the same window.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "tracking-api db_pool_in_use reached 40/40 immediately after 08:55 while it had only used 17/50 before; wait_p99 jumped from \u22643 ms to 420 ms at 08:55.",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "After 09:00 db_pool wait_p99 \u22481.98 s (near acquire timeout) and error_rate \u224812 %.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "5xx high and DbPoolSaturated alerts fired after latency spike, not before.",
+            "evidence_ids": [
+              "E5"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "FinOps reduction of tracking-api DB pool from 50\u219240 is the primary cause of the outage.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [
+          "E6"
+        ],
+        "contradicting_evidence": [
+          "E7",
+          "E8"
+        ],
+        "facts": [
+          {
+            "text": "Pool change occurred at 08:55 just before first large jump in errors.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "DB write_iops and query latency had already spiked by 08:50, 5 min before the pool change.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Even with the previous 50-connection limit the pool would have filled (40 already in use by 08:55).",
+            "evidence_ids": [
+              "E8"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "A batch job or migration on tracking-db caused the write-load spike.",
+        "status": "inconclusive",
+        "confidence": "low",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E9"
+        ],
+        "facts": [
+          {
+            "text": "No deploys, migrations or data-jobs recorded in the window.",
+            "evidence_ids": [
+              "E9"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Could still be an ad-hoc script or increased webhook-ingest volume not captured by change tracking."
+        ]
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Temporarily raise tracking-db provisioned IOPS (or scale instance class) to clear backlog.",
+        "rationale": "Reduces query latency, freeing DB connections and stopping 5xx immediately.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E7"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "fix",
+        "action": "Revert tracking-api pool to 50 after DB capacity issue resolved.",
+        "rationale": "Gives headroom during load spikes so connection starvation is less likely.",
+        "evidence_ids": [
+          "E3",
+          "E6",
+          "E8"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "prevent",
+        "action": "Add alert when tracking-db write_iops >80 % of provisioned or query_latency_p99 >100 ms.",
+        "rationale": "Detect DB saturation early before it cascades to APIs.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E7"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "detect",
+        "action": "Instrument webhook-ingest and other writers with metrics on event write rate and bytes.",
+        "rationale": "Helps identify the workload that drove the unexpected write surge.",
+        "evidence_ids": []
+      }
+    ],
+    "missing_data": [
+      "Which service or job produced the sudden increase in DB writes starting 08:50 UTC.",
+      "Per-service DB connection counts to confirm the main holder of connections."
+    ],
+    "gaps": [],
+    "security_findings": [],
+    "questions_for_human": [
+      "Was any bulk backfill or partner re-play started around 08:45-09:00 UTC?",
+      "Can we check RDS performance insights for the offending SQL and client?"
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "tracking-db write_iops climbed from ~1.5 k to ~9.9 k between 08:50 and 09:00 and stayed pegged (provisioned limit 10 k).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "tracking-db query_latency_p99 rose from 9 ms to 950 ms in the same window.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "tracking-api db_pool_in_use reached 40/40 immediately after 08:55 while it had only used 17/50 before; wait_p99 jumped from \u22643 ms to 420 ms at 08:55.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "After 09:00 db_pool wait_p99 \u22481.98 s (near acquire timeout) and error_rate \u224812 %.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "5xx high and DbPoolSaturated alerts fired after latency spike, not before.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "Pool change occurred at 08:55 just before first large jump in errors.",
+        "tools": [
+          "get_changes",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0002",
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "DB write_iops and query latency had already spiked by 08:50, 5 min before the pool change.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Even with the previous 50-connection limit the pool would have filled (40 already in use by 08:55).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "No deploys, migrations or data-jobs recorded in the window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0010",
+          "call-0029",
+          "call-0023"
+        ]
+      }
+    ],
+    "stop_reason": "max_tokens"
+  },
+  "stop_reason": "max_tokens",
+  "usage": {
+    "llm_calls": 39,
+    "input_tokens": 411936,
+    "output_tokens": 22847,
+    "cache_read_tokens": 384256,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 19456,
+    "cost_usd": 0.430264,
+    "unpriced_calls": 0,
+    "tool_calls": 38,
+    "latency_ms": 318291.69
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 39,
+      "input_tokens": 411936,
+      "output_tokens": 22847,
+      "cache_read_tokens": 384256,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 19456,
+      "cost_usd": 0.430264,
+      "unpriced_calls": 0,
+      "tool_calls": 38,
+      "latency_ms": 318291.69
+    }
+  },
+  "by_model": {
+    "o3-2025-04-16": {
+      "llm_calls": 39,
+      "input_tokens": 411936,
+      "output_tokens": 22847,
+      "cache_read_tokens": 384256,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 19456,
+      "cost_usd": 0.430264,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 318291.69
+    }
+  },
+  "tool_calls": 38,
+  "latency_s": 318.421,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T07:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-api",
+        "name": "http_server_errors_total"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T09:00:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T08:55:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:55:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "query": "ERROR",
+        "service": "tracking-api",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T00:00:00Z",
+        "end": "2026-09-15T08:55:00Z",
+        "service": "tracking-api"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-db",
+        "name": "active_connections"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T00:00:00Z",
+        "end": "2026-09-15T09:00:00Z",
+        "kind": "deploy"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T07:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "entity": "tracking-api",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T07:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "kind": "scheduled_job"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "bulk",
+        "service": "tracking-api",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "events-queue"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_topology",
+      "args": {
+        "service": "tracking-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "data-jobs"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T07:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "entity": "tracking-db",
+        "source": "aws-rds"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:10:00Z",
+        "query": "CopyFrom",
+        "service": "tracking-api",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "query": "ingested",
+        "service": "webhook-ingest",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "data-jobs",
+        "kind": "scheduled_job"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T08:55:00Z",
+        "query": "HTTP 2",
+        "service": "webhook-ingest",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "query": "job started",
+        "service": "data-jobs",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-15T08:50:00Z",
+        "end": "2026-09-15T09:05:00Z",
+        "service": "tracking-api",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "query": "vacuum",
+        "service": "tracking-db",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "webhook-ingest"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-15T08:00:00Z",
+        "end": "2026-09-15T10:00:00Z",
+        "service": "tracking-db",
+        "kind": "migration"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:05:00Z",
+        "query": "INSERT",
+        "service": "tracking-db",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0031",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:40:00Z",
+        "end": "2026-09-15T08:55:00Z",
+        "entity": "tracking-db",
+        "source": "aws-rds"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0032",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:05:00Z",
+        "service": "tracking-db",
+        "level": "INFO",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0033",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:15:00Z",
+        "query": "event",
+        "service": "webhook-ingest",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0034",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:50:00Z",
+        "end": "2026-09-15T08:59:00Z",
+        "service": "webhook-ingest",
+        "level": "ERROR",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0035",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:00:00Z",
+        "entity": "data-jobs",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0036",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:05:00Z",
+        "query": "slow",
+        "service": "webhook-ingest",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0037",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-15T08:30:00Z",
+        "end": "2026-09-15T09:30:00Z",
+        "service": "webhook-ingest",
+        "name": "event_write_rate"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0038",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-15T08:45:00Z",
+        "end": "2026-09-15T09:15:00Z",
+        "query": "COPY",
+        "service": "tracking-db",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    }
+  ]
+}

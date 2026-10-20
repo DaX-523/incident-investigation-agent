@@ -1,0 +1,17 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.017597,
+  "verdict": {
+    "root_cause": "partial",
+    "root_cause_reason": "The report identifies the right component and mechanism: pricing-cache failover to a nearly empty replica caused the cold-cache miss storm. But it frames the primary root cause as a host hardware fault on pricing-cache-001, whereas the key\u2019s root cause is the failover to the replica that was mid full-resync.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": [
+      "The warmer step that the runbook prescribes after a failover was not run."
+    ]
+  }
+}

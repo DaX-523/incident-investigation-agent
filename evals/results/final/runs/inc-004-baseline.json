@@ -1,0 +1,1371 @@
+{
+  "scenario": "inc-004",
+  "system": "baseline",
+  "preset": "budget",
+  "provider": "anthropic",
+  "report": {
+    "incident_title": "Login down for many customers - looks like a network/ISP outage",
+    "outcome": "conclusive",
+    "summary": "Login outage is caused by an internal configuration change, not Cloudflare or an ISP. At 11:40Z, PR #874 changed auth-svc's AUTH_DB_POOL_MAX from 50 to 5. The PR described the change as a minimum-idle tune. auth-svc's HikariCP pool is now capped at 5 connections. Login traffic (roughly 40 to 220 rps over the window, which is partly a retry pattern - an assumption) saturates those 5 connections. Requests queue behind the pool, p99 climbs to the 30s timeout, and logins hang. The Cloudflare notice covers only the S\u00e3o Paulo (GRU) data center, and origin packet loss and infra events show no network fault. The reporter's Cloudflare/ISP explanation is not supported. Engineering should not post a Cloudflare attribution. The mitigation is to restore AUTH_DB_POOL_MAX to 50 (previous value) and confirm pool recovery.",
+    "root_cause": "Config change PR #874 (identity-team, 11:40Z) lowered auth-svc AUTH_DB_POOL_MAX from 50 to 5 instead of setting minimum idle. The HikariCP pool (max=5) starved under normal login load, which produced queueing and 30s connection timeouts on POST /login.",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H1",
+        "statement": "Config change AUTH_DB_POOL_MAX 50->5 (PR #874) starved the auth-svc Hikari pool, causing login queueing and timeouts.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E7",
+          "E8"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "Change log: at 11:40Z, config change 'Tune DB pool (PR #874): set AUTH_DB_POOL_MAX=5'; previously 50; PR text says 'minimum idle connections to 5'.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "db_pool_active_connections drops from 21 (11:35) to 5 at 11:40 and stays flat at 5 through 12:30.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "db_pool_pending_threads rises from 0 (11:40) to 140-151 (12:00-12:30).",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "latency_p99 moves from ~125ms (11:40) to 410ms (11:45), 2.9s (11:50), then 30000ms from 11:55 onward.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "auth-svc startup log at 11:41:05Z: 'HikariPool-1 - Starting... (maximumPoolSize=5, minimumIdle=5)'.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "auth-svc ERROR at 12:01:14Z: 'Connection is not available, request timed out after 30000ms (total=5, active=5, idle=0, waiting=143)'.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "api-gateway WARN at 12:03:40Z: 'upstream auth-svc response time 30012ms for POST /login'.",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "Past incident PIR-2026-009 (Feb 2026) had a similar pattern: auth-svc Hikari pool saturated causing slow logins.",
+            "evidence_ids": [
+              "E8"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H2",
+        "statement": "Cloudflare / ISP network outage is causing the login failures (reporter's theory).",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E9",
+          "E10",
+          "E11",
+          "E12"
+        ],
+        "facts": [
+          {
+            "text": "Cloudflare status: 'Degraded performance - S\u00e3o Paulo (GRU) data center... All other regions operational.' The notice does not mention a global or ISP-level issue.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "cdn-edge origin_packet_loss stays between 0.01% and 0.02% for the whole 11:00-12:30 window.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "No infra events in 11:30-12:30 (no network, cluster or cloud events).",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "The failure signature is a 30s pool-acquisition timeout inside auth-svc, not a network or TLS timeout. It starts at the pool change, not at a provider event.",
+            "evidence_ids": [
+              "E12"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "users-db is slow or saturated, so connections are held too long.",
+        "status": "refuted",
+        "confidence": "medium",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E13"
+        ],
+        "facts": [
+          {
+            "text": "users-db cpu_utilization falls from 25% (11:35) to 14-15% after 11:40 and stays flat. This is not a saturated DB.",
+            "evidence_ids": [
+              "E13"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H4",
+        "statement": "Clock leap or thread stall caused the failure (WARN 'housekeeper delta=1m2s' at 11:57:30Z).",
+        "status": "inconclusive",
+        "confidence": "low",
+        "supporting_evidence": [
+          "E14"
+        ],
+        "contradicting_evidence": [
+          "E15",
+          "E16"
+        ],
+        "facts": [
+          {
+            "text": "auth-svc WARN at 11:57:30Z: 'Thread starvation or clock leap detected (housekeeper delta=1m2s)'.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "No clock or NTP infra events in the window.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "The warning comes after the pool saturation started (11:40) and during a period when pending threads were already rising. It looks like a symptom, not a cause.",
+            "evidence_ids": [
+              "E16"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Revert AUTH_DB_POOL_MAX on auth-svc from 5 to 50 (the prior value) and roll the config out. Confirm the startup log shows maximumPoolSize=50, then watch db_pool_pending_threads drop to 0 and login p99 return to ~125ms.",
+        "rationale": "The change at 11:40Z is the only change on the failing path, and pool starvation matches the timing and symptoms exactly. Reverting is the fastest recovery.",
+        "evidence_ids": [
+          "E1",
+          "E2",
+          "E3",
+          "E4",
+          "E5",
+          "E6",
+          "E12",
+          "E14",
+          "E16"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Once the pool is restored, watch for a retry surge. Login rps rose from ~40 to ~220 during the incident, likely from client retries of hung logins (assumption). Consider temporary rate limiting or a staggered client retry, if traffic spikes on recovery.",
+        "rationale": "Login rps roughly quintupled while logins were hanging. Recovery could be hit by a backlog of retries.",
+        "evidence_ids": [
+          "E2",
+          "E3",
+          "E4",
+          "E12",
+          "E16"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "mitigate",
+        "action": "Do not post a Cloudflare/ISP attribution in the status update. Post that login is degraded due to an internal auth-svc configuration change that is being rolled back. Mention the GRU-only Cloudflare degradation only as a possible separate, minor factor for GRU customers, pending confirmation.",
+        "rationale": "The Cloudflare notice is limited to GRU and the failure is inside auth-svc's pool. An external attribution would be inaccurate.",
+        "evidence_ids": [
+          "E5",
+          "E6",
+          "E9",
+          "E10",
+          "E12",
+          "E14",
+          "E16"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "fix",
+        "action": "Correct PR #874 so its description and the config key match the intent (minimum idle versus maximum pool size). Verify the intended pool sizing against load before it ships. Review the identity-team change for a sizing sanity check.",
+        "rationale": "The PR text ('minimum idle 5') does not match the change made (AUTH_DB_POOL_MAX 50->5). The mismatch hid the risk in review.",
+        "evidence_ids": [
+          "E1"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "prevent",
+        "action": "Add config-change guardrails: require a pool-size lower bound or a canary for auth-svc DB pool settings, and add a CI or deploy check that flags a >50% reduction in pool max.",
+        "rationale": "A 10x reduction in pool max went out without detection, and the effect was a full login outage.",
+        "evidence_ids": [
+          "E1",
+          "E5",
+          "E6",
+          "E12",
+          "E14",
+          "E16"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Alert on db_pool_pending_threads > 0 sustained for several minutes, and on Hikari 'Connection is not available' errors. The existing AuthLatencyHigh alert fired at 11:58Z, about 18 minutes after the change and after pending threads were already climbing.",
+        "rationale": "The pool-level signal would have shown the regression about 15 minutes earlier than the latency alert.",
+        "evidence_ids": [
+          "E2",
+          "E3",
+          "E4",
+          "E12",
+          "E16"
+        ]
+      }
+    ],
+    "missing_data": [
+      "No region or label breakdown for auth-svc login latency or errors. Impact on GRU customers versus other regions cannot be separated, so a GRU-specific Cloudflare contribution cannot be fully excluded.",
+      "No runbook exists for Hikari pool saturation in auth-svc (search returned empty).",
+      "Login rps increase (40 to 220) is not labelled as retries; the retry hypothesis is an assumption and would need client-side retry metrics or gateway request logs to confirm.",
+      "The pool metric shows active=5 from 11:40 while the auth-svc restart log is at 11:41:05Z. The ~1 min gap is probably sampling granularity, but it was not verified.",
+      "No traces are available after 11:50Z for auth-svc (get_traces returned empty), so per-request timing could not be checked directly.",
+      "The 11:57:30Z 'clock leap' warning has no matching infra or clock event; its cause is unknown."
+    ],
+    "gaps": [
+      "get_external_report {'name': 'vendor status'} failed: not_found: no report named 'vendor status'; available: ['cloudflare_status', 'support_ticket_summary']"
+    ],
+    "security_findings": [],
+    "questions_for_human": [
+      "Was the 11:40Z AUTH_DB_POOL_MAX change intended to set minimumIdle, or maximumPoolSize? Who approved PR #874 and why was the value 5?",
+      "Do GRU-routed customers show a different login failure rate? If yes, the Cloudflare GRU degradation may be an additional, minor factor for those customers.",
+      "Should the status page say 'internal config issue, rollback in progress' now? Cloudflare should not be named as the cause."
+    ],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "Change log: at 11:40Z, config change 'Tune DB pool (PR #874): set AUTH_DB_POOL_MAX=5'; previously 50; PR text says 'minimum idle connections to 5'.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0004",
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "db_pool_active_connections drops from 21 (11:35) to 5 at 11:40 and stays flat at 5 through 12:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "db_pool_pending_threads rises from 0 (11:40) to 140-151 (12:00-12:30).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "latency_p99 moves from ~125ms (11:40) to 410ms (11:45), 2.9s (11:50), then 30000ms from 11:55 onward.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "auth-svc startup log at 11:41:05Z: 'HikariPool-1 - Starting... (maximumPoolSize=5, minimumIdle=5)'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0010"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "auth-svc ERROR at 12:01:14Z: 'Connection is not available, request timed out after 30000ms (total=5, active=5, idle=0, waiting=143)'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "api-gateway WARN at 12:03:40Z: 'upstream auth-svc response time 30012ms for POST /login'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0014"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "Past incident PIR-2026-009 (Feb 2026) had a similar pattern: auth-svc Hikari pool saturated causing slow logins.",
+        "tools": [
+          "search_past_incidents"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "Cloudflare status: 'Degraded performance - S\u00e3o Paulo (GRU) data center... All other regions operational.' The notice does not mention a global or ISP-level issue.",
+        "tools": [
+          "get_external_report"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "cdn-edge origin_packet_loss stays between 0.01% and 0.02% for the whole 11:00-12:30 window.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0009"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "No infra events in 11:30-12:30 (no network, cluster or cloud events).",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "The failure signature is a 30s pool-acquisition timeout inside auth-svc, not a network or TLS timeout. It starts at the pool change, not at a provider event.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "users-db cpu_utilization falls from 25% (11:35) to 14-15% after 11:40 and stays flat. This is not a saturated DB.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "auth-svc WARN at 11:57:30Z: 'Thread starvation or clock leap detected (housekeeper delta=1m2s)'.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0007"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "No clock or NTP infra events in the window.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0013"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "The warning comes after the pool saturation started (11:40) and during a period when pending threads were already rising. It looks like a symptom, not a cause.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0006",
+          "call-0007"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 5,
+    "input_tokens": 57384,
+    "output_tokens": 6735,
+    "cache_read_tokens": 40425,
+    "cache_write_tokens": 16947,
+    "reasoning_tokens": 1488,
+    "cost_usd": 0.005892,
+    "unpriced_calls": 0,
+    "tool_calls": 16,
+    "latency_ms": 31084.6
+  },
+  "by_agent": {
+    "baseline": {
+      "llm_calls": 5,
+      "input_tokens": 57384,
+      "output_tokens": 6735,
+      "cache_read_tokens": 40425,
+      "cache_write_tokens": 16947,
+      "reasoning_tokens": 1488,
+      "cost_usd": 0.005892,
+      "unpriced_calls": 0,
+      "tool_calls": 16,
+      "latency_ms": 31084.6
+    }
+  },
+  "by_model": {
+    "claude-haiku-5-5": {
+      "llm_calls": 5,
+      "input_tokens": 57384,
+      "output_tokens": 6735,
+      "cache_read_tokens": 40425,
+      "cache_write_tokens": 16947,
+      "reasoning_tokens": 1488,
+      "cost_usd": 0.005892,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 31084.6
+    }
+  },
+  "tool_calls": 16,
+  "latency_s": 31.113,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "services": [
+          {
+            "name": "cdn-edge",
+            "kind": "external",
+            "depends_on": [],
+            "notes": "Cloudflare in front of all web traffic"
+          },
+          {
+            "name": "api-gateway",
+            "kind": "gateway",
+            "depends_on": [
+              "auth-svc",
+              "catalog-svc"
+            ],
+            "notes": null
+          },
+          {
+            "name": "auth-svc",
+            "kind": "service",
+            "depends_on": [
+              "users-db"
+            ],
+            "notes": "JVM service using HikariCP"
+          },
+          {
+            "name": "catalog-svc",
+            "kind": "service",
+            "depends_on": [],
+            "notes": null
+          },
+          {
+            "name": "users-db",
+            "kind": "postgres",
+            "depends_on": [],
+            "notes": null
+          }
+        ],
+        "upstream": [],
+        "downstream": []
+      }
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_alerts",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "alerts": [
+          {
+            "ts": "2026-10-06T11:58:00Z",
+            "name": "AuthLatencyHigh",
+            "severity": "warning",
+            "entity": "auth-svc",
+            "state": "firing",
+            "summary": "p99 > 2s"
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_external_report",
+      "args": {
+        "name": "vendor status"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1,
+      "data": null
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "get_changes",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-10-06T11:40:00Z",
+            "kind": "config",
+            "service": "auth-svc",
+            "summary": "Tune DB pool (PR #874): set AUTH_DB_POOL_MAX=5",
+            "author": "identity-team",
+            "details": "PR description says 'set minimum idle connections to 5'; the env var changed was AUTH_DB_POOL_MAX (previously 50)."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "get_external_report",
+      "args": {
+        "name": "cloudflare_status"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "reports": [
+          {
+            "name": "cloudflare_status",
+            "kind": "vendor_status_page",
+            "generated_at": "2026-10-06T12:05:00Z",
+            "body": "Degraded performance - S\u00e3o Paulo (GRU) data center. Customers routed through GRU may see increased latency. All other regions operational."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-10-06T11:00:00Z",
+        "end": "2026-10-06T12:30:00Z",
+        "service": "auth-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "auth-svc",
+            "name": "login_requests_per_sec",
+            "unit": "rps",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-10-06T11:00:00Z",
+                "value": 40.0
+              },
+              {
+                "ts": "2026-10-06T11:05:00Z",
+                "value": 44.0
+              },
+              {
+                "ts": "2026-10-06T11:10:00Z",
+                "value": 49.0
+              },
+              {
+                "ts": "2026-10-06T11:15:00Z",
+                "value": 55.0
+              },
+              {
+                "ts": "2026-10-06T11:20:00Z",
+                "value": 62.0
+              },
+              {
+                "ts": "2026-10-06T11:25:00Z",
+                "value": 70.0
+              },
+              {
+                "ts": "2026-10-06T11:30:00Z",
+                "value": 81.0
+              },
+              {
+                "ts": "2026-10-06T11:35:00Z",
+                "value": 95.0
+              },
+              {
+                "ts": "2026-10-06T11:40:00Z",
+                "value": 110.0
+              },
+              {
+                "ts": "2026-10-06T11:45:00Z",
+                "value": 130.0
+              },
+              {
+                "ts": "2026-10-06T11:50:00Z",
+                "value": 150.0
+              },
+              {
+                "ts": "2026-10-06T11:55:00Z",
+                "value": 175.0
+              },
+              {
+                "ts": "2026-10-06T12:00:00Z",
+                "value": 200.0
+              },
+              {
+                "ts": "2026-10-06T12:05:00Z",
+                "value": 215.0
+              },
+              {
+                "ts": "2026-10-06T12:10:00Z",
+                "value": 220.0
+              },
+              {
+                "ts": "2026-10-06T12:15:00Z",
+                "value": 222.0
+              },
+              {
+                "ts": "2026-10-06T12:20:00Z",
+                "value": 218.0
+              },
+              {
+                "ts": "2026-10-06T12:25:00Z",
+                "value": 221.0
+              },
+              {
+                "ts": "2026-10-06T12:30:00Z",
+                "value": 219.0
+              }
+            ]
+          },
+          {
+            "service": "auth-svc",
+            "name": "latency_p99",
+            "unit": "ms",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-10-06T11:00:00Z",
+                "value": 120.0
+              },
+              {
+                "ts": "2026-10-06T11:05:00Z",
+                "value": 118.0
+              },
+              {
+                "ts": "2026-10-06T11:10:00Z",
+                "value": 122.0
+              },
+              {
+                "ts": "2026-10-06T11:15:00Z",
+                "value": 119.0
+              },
+              {
+                "ts": "2026-10-06T11:20:00Z",
+                "value": 121.0
+              },
+              {
+                "ts": "2026-10-06T11:25:00Z",
+                "value": 124.0
+              },
+              {
+                "ts": "2026-10-06T11:30:00Z",
+                "value": 123.0
+              },
+              {
+                "ts": "2026-10-06T11:35:00Z",
+                "value": 126.0
+              },
+              {
+                "ts": "2026-10-06T11:40:00Z",
+                "value": 125.0
+              },
+              {
+                "ts": "2026-10-06T11:45:00Z",
+                "value": 410.0
+              },
+              {
+                "ts": "2026-10-06T11:50:00Z",
+                "value": 2900.0
+              },
+              {
+                "ts": "2026-10-06T11:55:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:00:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:05:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:10:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:15:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:20:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:25:00Z",
+                "value": 30000.0
+              },
+              {
+                "ts": "2026-10-06T12:30:00Z",
+                "value": 30000.0
+              }
+            ]
+          },
+          {
+            "service": "auth-svc",
+            "name": "db_pool_active_connections",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-10-06T11:00:00Z",
+                "value": 12.0
+              },
+              {
+                "ts": "2026-10-06T11:05:00Z",
+                "value": 13.0
+              },
+              {
+                "ts": "2026-10-06T11:10:00Z",
+                "value": 14.0
+              },
+              {
+                "ts": "2026-10-06T11:15:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T11:20:00Z",
+                "value": 17.0
+              },
+              {
+                "ts": "2026-10-06T11:25:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-10-06T11:30:00Z",
+                "value": 19.0
+              },
+              {
+                "ts": "2026-10-06T11:35:00Z",
+                "value": 21.0
+              },
+              {
+                "ts": "2026-10-06T11:40:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T11:45:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T11:50:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T11:55:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:00:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:05:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:10:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:15:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:20:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:25:00Z",
+                "value": 5.0
+              },
+              {
+                "ts": "2026-10-06T12:30:00Z",
+                "value": 5.0
+              }
+            ]
+          },
+          {
+            "service": "auth-svc",
+            "name": "db_pool_pending_threads",
+            "unit": "count",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-10-06T11:00:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:05:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:10:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:15:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:20:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:25:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:30:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:35:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:40:00Z",
+                "value": 0.0
+              },
+              {
+                "ts": "2026-10-06T11:45:00Z",
+                "value": 2.0
+              },
+              {
+                "ts": "2026-10-06T11:50:00Z",
+                "value": 14.0
+              },
+              {
+                "ts": "2026-10-06T11:55:00Z",
+                "value": 61.0
+              },
+              {
+                "ts": "2026-10-06T12:00:00Z",
+                "value": 140.0
+              },
+              {
+                "ts": "2026-10-06T12:05:00Z",
+                "value": 143.0
+              },
+              {
+                "ts": "2026-10-06T12:10:00Z",
+                "value": 151.0
+              },
+              {
+                "ts": "2026-10-06T12:15:00Z",
+                "value": 149.0
+              },
+              {
+                "ts": "2026-10-06T12:20:00Z",
+                "value": 147.0
+              },
+              {
+                "ts": "2026-10-06T12:25:00Z",
+                "value": 150.0
+              },
+              {
+                "ts": "2026-10-06T12:30:00Z",
+                "value": 148.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "login_requests_per_sec",
+            "labels": {}
+          },
+          {
+            "name": "latency_p99",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_active_connections",
+            "labels": {}
+          },
+          {
+            "name": "db_pool_pending_threads",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-10-06T11:30:00Z",
+        "end": "2026-10-06T12:30:00Z",
+        "service": "auth-svc",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-10-06T11:41:05Z",
+            "service": "auth-svc",
+            "level": "INFO",
+            "message": "HikariPool-1 - Starting... (maximumPoolSize=5, minimumIdle=5)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-10-06T11:57:30Z",
+            "service": "auth-svc",
+            "level": "WARN",
+            "message": "HikariPool-1 - Thread starvation or clock leap detected (housekeeper delta=1m2s)",
+            "attrs": {}
+          },
+          {
+            "ts": "2026-10-06T12:01:14Z",
+            "service": "auth-svc",
+            "level": "ERROR",
+            "message": "HikariPool-1 - Connection is not available, request timed out after 30000ms (total=5, active=5, idle=0, waiting=143)",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-10-06T11:00:00Z",
+        "end": "2026-10-06T12:30:00Z",
+        "service": "users-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "users-db",
+            "name": "cpu_utilization",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-10-06T11:00:00Z",
+                "value": 18.0
+              },
+              {
+                "ts": "2026-10-06T11:05:00Z",
+                "value": 19.0
+              },
+              {
+                "ts": "2026-10-06T11:10:00Z",
+                "value": 20.0
+              },
+              {
+                "ts": "2026-10-06T11:15:00Z",
+                "value": 21.0
+              },
+              {
+                "ts": "2026-10-06T11:20:00Z",
+                "value": 22.0
+              },
+              {
+                "ts": "2026-10-06T11:25:00Z",
+                "value": 23.0
+              },
+              {
+                "ts": "2026-10-06T11:30:00Z",
+                "value": 24.0
+              },
+              {
+                "ts": "2026-10-06T11:35:00Z",
+                "value": 25.0
+              },
+              {
+                "ts": "2026-10-06T11:40:00Z",
+                "value": 14.0
+              },
+              {
+                "ts": "2026-10-06T11:45:00Z",
+                "value": 14.0
+              },
+              {
+                "ts": "2026-10-06T11:50:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T11:55:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:00:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:05:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:10:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:15:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:20:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:25:00Z",
+                "value": 15.0
+              },
+              {
+                "ts": "2026-10-06T12:30:00Z",
+                "value": 15.0
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "cpu_utilization",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-10-06T11:00:00Z",
+        "end": "2026-10-06T12:30:00Z",
+        "service": "cdn-edge"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "series": [
+          {
+            "service": "cdn-edge",
+            "name": "origin_packet_loss",
+            "unit": "percent",
+            "labels": {},
+            "points": [
+              {
+                "ts": "2026-10-06T11:00:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:05:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:10:00Z",
+                "value": 0.02
+              },
+              {
+                "ts": "2026-10-06T11:15:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:20:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:25:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:30:00Z",
+                "value": 0.02
+              },
+              {
+                "ts": "2026-10-06T11:35:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:40:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:45:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T11:50:00Z",
+                "value": 0.02
+              },
+              {
+                "ts": "2026-10-06T11:55:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T12:00:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T12:05:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T12:10:00Z",
+                "value": 0.02
+              },
+              {
+                "ts": "2026-10-06T12:15:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T12:20:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T12:25:00Z",
+                "value": 0.01
+              },
+              {
+                "ts": "2026-10-06T12:30:00Z",
+                "value": 0.01
+              }
+            ]
+          }
+        ],
+        "available_series": [
+          {
+            "name": "origin_packet_loss",
+            "labels": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-10-06T11:35:00Z",
+        "end": "2026-10-06T11:50:00Z",
+        "service": "auth-svc",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-10-06T11:41:05Z",
+            "service": "auth-svc",
+            "level": "INFO",
+            "message": "HikariPool-1 - Starting... (maximumPoolSize=5, minimumIdle=5)",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-10-06T11:50:00Z",
+        "end": "2026-10-06T12:30:00Z",
+        "service": "auth-svc",
+        "limit": 10
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "traces": []
+      }
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "connection pool"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "incidents": [
+          {
+            "id": "PIR-2026-009",
+            "date": "2026-02-17T00:00:00Z",
+            "title": "auth-svc slow logins",
+            "summary": "Logins slow for 20 minutes; Hikari pool saturated.",
+            "root_cause": "Missing index on sessions table made each login hold a connection longer.",
+            "resolution": "Added index."
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-10-06T11:30:00Z",
+        "end": "2026-10-06T12:30:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "events": []
+      }
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-10-06T11:55:00Z",
+        "end": "2026-10-06T12:30:00Z",
+        "service": "api-gateway",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "entries": [
+          {
+            "ts": "2026-10-06T12:03:40Z",
+            "service": "api-gateway",
+            "level": "WARN",
+            "message": "upstream auth-svc response time 30012ms for POST /login",
+            "attrs": {}
+          }
+        ]
+      }
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "hikari pool auth"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "runbooks": []
+      }
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-10-06T00:00:00Z",
+        "service": "auth-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1,
+      "data": {
+        "changes": [
+          {
+            "ts": "2026-10-06T11:40:00Z",
+            "kind": "config",
+            "service": "auth-svc",
+            "summary": "Tune DB pool (PR #874): set AUTH_DB_POOL_MAX=5",
+            "author": "identity-team",
+            "details": "PR description says 'set minimum idle connections to 5'; the env var changed was AUTH_DB_POOL_MAX (previously 50)."
+          }
+        ]
+      }
+    }
+  ]
+}

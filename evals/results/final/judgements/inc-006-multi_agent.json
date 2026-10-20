@@ -1,0 +1,13 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.014222,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the correct originating change and mechanism: the 09:30 fraud-gbm v7 hot-reload caused fraud-svc memory growth until Kubernetes OOMKilled the container. It also correctly treats the payments retries as a consequence, not the cause.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [],
+    "unsupported_claims": []
+  }
+}

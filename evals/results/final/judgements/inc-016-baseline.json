@@ -1,0 +1,17 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.010506,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the same originating component and mechanism as the key: the backfill-carrier-events job overloaded tracking-db with heavy writes/locks, which drove query latency up and exhausted tracking-api\u2019s connection pool. The pool reduction is treated as a contributing factor, not the primary cause.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [
+      1
+    ],
+    "unsupported_claims": [
+      "\u201cpool usage had already risen to 31\u201d"
+    ]
+  }
+}

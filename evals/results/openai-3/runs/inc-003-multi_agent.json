@@ -1,0 +1,1621 @@
+{
+  "scenario": "inc-003",
+  "system": "multi_agent",
+  "preset": "budget",
+  "provider": "openai",
+  "report": {
+    "incident_title": "API gateway p99 latency and 504s spiking",
+    "outcome": "conclusive",
+    "summary": "Confirmed: api-gateway 504s were caused by catalog-svc responses stretching to the gateway\u2019s 5 s upstream timeout, with traces placing the delay primarily in catalog-db `SELECT product_reviews` after Redis cache misses (E1, E2, E3, E6, E8, E19). Confirmed chronology shows a catalog-svc feature flag enabled at 18:30 to embed the latest 200 reviews in each PDP cache entry; immediately after, Redis PDP value size and memory usage climbed, Redis hit ratio later collapsed as maxmemory was reached and evictions began, and only then did catalog-db CPU surge and query latency rise (E21, E24, E25, E26, E27, E28). Assumption with minor remaining uncertainty: we could not directly measure DB query throughput, so the exact mix of \"more queries after cache misses\" versus \"heavier queries per request\" is inferred rather than directly counted, but either path still originates from the 18:30 cache-entry expansion and does not change the failing mechanism (E29, E30).",
+    "root_cause": "At 18:30Z, `catalog-svc` enabled feature flag `pdp_cache_include_reviews` to 100%, changing PDP cache entries so they embedded the latest 200 reviews (E21). That increased Redis `product:pdp:*` average value size from about 4.1 KB before the change to about 38.2 KB by 19:00, driving Redis from ~61-62% memory to 96% at 19:00 and then 100% maxmemory with evictions starting at 19:05 (E24, E25, E26, E9, E17). The resulting hit-ratio collapse caused PDP requests to fall through to `catalog-db`; DB CPU then rose from normal levels before 18:55 to 97-99% after 19:10, and traces show `SELECT product_reviews` taking ~4.6 s inside `catalog-svc`, which caused `api-gateway` to hit its 5 s upstream timeout and return 504s (E27, E11, E18, E6, E8, E19, E3).",
+    "confidence": "high",
+    "hypotheses": [
+      {
+        "rank": 1,
+        "hypothesis_id": "H5",
+        "statement": "The 18:30 Z feature-flag change that started writing the last 200 product-reviews into every Product-Detail-Page cache entry massively increased the object size stored in redis-cache. Within ~35 min this filled redis\u2019 8 GB maxmemory (E9, E17), triggered heavy evictions and a collapse of the hit-ratio, which in turn drove a surge of fall-through queries to catalog-db (E10, E11). The resulting DB CPU saturation (E11, E18) stretched SELECT product_reviews to ~4.6 s (E6, E8, E19), propagating up through catalog-svc (E2) to api-gateway where the 5 s upstream timeout produced 504s (E1, E3).",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E21",
+          "E24",
+          "E25",
+          "E26",
+          "E28",
+          "E9",
+          "E17",
+          "E27",
+          "E10",
+          "E11",
+          "E18",
+          "E2",
+          "E6",
+          "E8",
+          "E12",
+          "E19"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "At 18:30Z, catalog-svc had a feature-flag change: 'pdp_cache_include_reviews' moved from 0% to 100%, with details stating that product page cache entries now embed the latest 200 reviews to speed up PDP rendering. This change landed 42 minutes before the gateway latency/504 alert window and is on the product-page path described in the incident.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "From 18:00 through 18:25, redis-cache was steady before the 18:30 feature-flag flip: used_memory_pct_of_maxmemory stayed at 61-62%, evicted_keys_per_sec stayed at 0, hit_ratio stayed at 0.96, and avg_value_size_bytes for keyspace product:pdp:* stayed about 4.1 KB. At 18:30 the same avg_value_size_bytes series ticked up to 4.3 KB and then climbed rapidly after the flip window, indicating the redis value-size change began at the flag-change boundary rather than earlier in the hour.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "After 18:30, redis-cache product:pdp:* average value size rose sharply from ~4.3 KB at 18:30 to 12.8 KB at 18:35, 21.5 KB at 18:40, 29.8 KB at 18:45, and ~38.2 KB by 19:00. In the same period, used_memory_pct_of_maxmemory ramped from 63% at 18:30 to 68%, 74%, 80%, 86%, 91%, and then 96% at 19:00. This shows the memory ramp started immediately after the flag flip and was not already underway before 18:30.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Redis did not begin evicting before 19:05: evicted_keys_per_sec remained 0 through 19:00, then jumped to 1200/s at 19:05 and ~4.8-5.1k/s from 19:10 onward as used_memory_pct_of_maxmemory hit 100%. Over that same transition, hit_ratio fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and 0.40 by 19:20. A redis-cache WARN log at 19:05:12 states \"maxmemory reached (8gb); evicting keys with allkeys-lru,\" matching the metric onset of evictions. This supports a post-18:30 progression: value-size growth first, then memory saturation, then evictions and hit-ratio collapse.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Over the same 18:00-19:30 window, redis-cache hit_ratio was stable at 0.96 until 18:25, slipped slightly to 0.95 from 18:30 through 18:55, reached 0.94 at 19:00, then collapsed to 0.71 at 19:05, 0.43 at 19:10, and about 0.40-0.41 from 19:15 through 19:30.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "`redis-cache` metrics show `used_memory_pct_of_maxmemory` at 96% at 19:00 and 100% from 19:05 through 19:35; `evicted_keys_per_sec` rose from 0 at 19:00 to 1200 at 19:05 and about 4800\u20135120 keys/s from 19:10 onward; `hit_ratio` fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and about 0.40 thereafter. A `redis-cache` WARN log at 19:05:12 says `maxmemory reached (8gb); evicting keys with allkeys-lru`. Data quality note: metric series returned through 19:35, not 19:40.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "redis-cache is memory-saturated at 100% maxmemory with heavy ongoing evictions (~5k keys/s) and a low hit ratio (~0.40-0.41) throughout the incident window. This indicates degraded cache effectiveness on the catalog path, consistent with increased fall-through pressure to the database.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "In the 18:00-19:30 window, catalog-db cpu_utilization was steady at 37-44% from 18:00 through 18:55, 45% at 19:00, then rose sharply to 72% at 19:05 and 97-99% from 19:10 through 19:30.",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "`catalog-svc` logs in the window include a WARN at 19:06:40: `cache miss product:pdp:88123 -> loading from catalog-db (with reviews)`, and an ERROR at 19:10:15: `db pool wait exceeded 2000ms (pool=40, waiting=312)`.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "`catalog-db` metric `cpu_utilization` rose from 45% at 19:00 to 72% at 19:05, 97% at 19:10, and 98\u201399% from 19:15 through 19:35. A `catalog-db` WARN log at 19:09:02 records `duration: 1840 ms` for statement `SELECT r.* FROM product_reviews r WHERE r.product_id = $1 ORDER BY r.created_at DESC`. Data quality note: metric data ends at 19:35, not 19:40.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "catalog-db CPU utilization is sustained at 98-99% from 19:15 through 19:35, and a warning alert for CatalogDBCPUHigh fired at 19:13. This is a direct downstream health issue on the failing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "catalog-svc latency_p99 rose in step with the gateway path, from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms from 19:15 onward.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "An error trace from 19:15:20 shows the latency building almost entirely downstream of the gateway: the api-gateway span for GET /products/{id} lasted 5000 ms and failed with \"upstream timeout\"; the child catalog-svc span lasted 4990 ms; within that request, redis-cache GET completed in 1 ms (hit=false) while a catalog-db SELECT product_reviews span took 4600 ms.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "The only returned `catalog-svc` trace sample (`t-c03-slow-1`, start 19:15:20) shows `api-gateway` span `GET /products/{id}` lasting 5000 ms with status `error` and attr `error=upstream timeout`; nested `catalog-svc` span `getProductPage` lasted 4990 ms with status `error`; nested `redis-cache` span `GET product:pdp:77410` lasted 1 ms with status `ok` and `hit=false`; nested `catalog-db` span `SELECT product_reviews` lasted 4600 ms with status `ok`. Data quality note: only 1 trace was returned despite a limit of 50, so trace evidence is sparse.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "Alerts returned in the incident window were `GatewayP99High` firing at 19:12 on `api-gateway`, `CatalogDBCPUHigh` firing at 19:13 on `catalog-db`, and `Gateway5xxHigh` firing at 19:14 on `api-gateway`.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "An error trace on the product-page path shows api-gateway timing out at 5000 ms with 'upstream timeout'; the catalog-svc span lasts 4990 ms; the redis-cache lookup returns quickly in 1 ms with hit=false; and the catalog-db query consumes 4600 ms. This localizes the latency to the catalog-svc/catalog-db portion of the path and does not indicate a network, DNS, or redis reachability delay in that sampled request.",
+            "evidence_ids": [
+              "E19"
+            ]
+          }
+        ],
+        "assumptions": [
+          "The new cache payload really includes ~200 reviews, accounting for the observed 9\u00d7 growth in avg_value_size.",
+          "Each cache miss triggers one heavy SELECT that loads those reviews."
+        ]
+      },
+      {
+        "rank": 2,
+        "hypothesis_id": "H4",
+        "statement": "catalog-db experienced slowdown or lock/resource contention, causing catalog-svc queries to exceed normal latency and leading api-gateway to return 504s.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E5",
+          "E11",
+          "E18",
+          "E27",
+          "E2",
+          "E6",
+          "E8",
+          "E19",
+          "E12",
+          "E10",
+          "E13",
+          "E14",
+          "E17",
+          "E21"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "catalog-svc logs showed database pressure before the alert window: at 19:10:15 it logged \"db pool wait exceeded 2000ms (pool=40, waiting=312)\". The other returned catalog log was a cache miss at 19:06:40 that loaded from catalog-db.",
+            "evidence_ids": [
+              "E5"
+            ]
+          },
+          {
+            "text": "`catalog-db` metric `cpu_utilization` rose from 45% at 19:00 to 72% at 19:05, 97% at 19:10, and 98\u201399% from 19:15 through 19:35. A `catalog-db` WARN log at 19:09:02 records `duration: 1840 ms` for statement `SELECT r.* FROM product_reviews r WHERE r.product_id = $1 ORDER BY r.created_at DESC`. Data quality note: metric data ends at 19:35, not 19:40.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "catalog-db CPU utilization is sustained at 98-99% from 19:15 through 19:35, and a warning alert for CatalogDBCPUHigh fired at 19:13. This is a direct downstream health issue on the failing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "In the 18:00-19:30 window, catalog-db cpu_utilization was steady at 37-44% from 18:00 through 18:55, 45% at 19:00, then rose sharply to 72% at 19:05 and 97-99% from 19:10 through 19:30.",
+            "evidence_ids": [
+              "E27"
+            ]
+          },
+          {
+            "text": "catalog-svc latency_p99 rose in step with the gateway path, from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms from 19:15 onward.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "An error trace from 19:15:20 shows the latency building almost entirely downstream of the gateway: the api-gateway span for GET /products/{id} lasted 5000 ms and failed with \"upstream timeout\"; the child catalog-svc span lasted 4990 ms; within that request, redis-cache GET completed in 1 ms (hit=false) while a catalog-db SELECT product_reviews span took 4600 ms.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "The only returned `catalog-svc` trace sample (`t-c03-slow-1`, start 19:15:20) shows `api-gateway` span `GET /products/{id}` lasting 5000 ms with status `error` and attr `error=upstream timeout`; nested `catalog-svc` span `getProductPage` lasted 4990 ms with status `error`; nested `redis-cache` span `GET product:pdp:77410` lasted 1 ms with status `ok` and `hit=false`; nested `catalog-db` span `SELECT product_reviews` lasted 4600 ms with status `ok`. Data quality note: only 1 trace was returned despite a limit of 50, so trace evidence is sparse.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "An error trace on the product-page path shows api-gateway timing out at 5000 ms with 'upstream timeout'; the catalog-svc span lasts 4990 ms; the redis-cache lookup returns quickly in 1 ms with hit=false; and the catalog-db query consumes 4600 ms. This localizes the latency to the catalog-svc/catalog-db portion of the path and does not indicate a network, DNS, or redis reachability delay in that sampled request.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "Alerts returned in the incident window were `GatewayP99High` firing at 19:12 on `api-gateway`, `CatalogDBCPUHigh` firing at 19:13 on `catalog-db`, and `Gateway5xxHigh` firing at 19:14 on `api-gateway`.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "`catalog-svc` logs in the window include a WARN at 19:06:40: `cache miss product:pdp:88123 -> loading from catalog-db (with reviews)`, and an ERROR at 19:10:15: `db pool wait exceeded 2000ms (pool=40, waiting=312)`.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "Service topology for the affected path is linear: api-gateway depends on catalog-svc, and catalog-svc depends on redis-cache and catalog-db. The blast radius below api-gateway includes catalog-svc, redis-cache, and catalog-db; there are no other downstream dependencies shown on this request path.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Alerts fired first on api-gateway at 19:12 for high p99 latency, then on catalog-db at 19:13 for CPU >90%, then on api-gateway again at 19:14 for elevated 504s. This places a database health signal inside the failing request path during the incident window.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "redis-cache is memory-saturated at 100% maxmemory with heavy ongoing evictions (~5k keys/s) and a low hit ratio (~0.40-0.41) throughout the incident window. This indicates degraded cache effectiveness on the catalog path, consistent with increased fall-through pressure to the database.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "At 18:30Z, catalog-svc had a feature-flag change: 'pdp_cache_include_reviews' moved from 0% to 100%, with details stating that product page cache entries now embed the latest 200 reviews to speed up PDP rendering. This change landed 42 minutes before the gateway latency/504 alert window and is on the product-page path described in the incident.",
+            "evidence_ids": [
+              "E21"
+            ]
+          }
+        ],
+        "assumptions": [
+          "High CPU correlates with query processing, not external wait.",
+          "No independent storage/network fault slowed the DB."
+        ]
+      },
+      {
+        "rank": 3,
+        "hypothesis_id": "H3",
+        "statement": "redis-cache became slow or unavailable, causing catalog-svc reads to block or fall back, which increases catalog-svc latency enough to trigger api-gateway 504s.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E9",
+          "E17",
+          "E24",
+          "E25",
+          "E26",
+          "E28",
+          "E10",
+          "E2",
+          "E13",
+          "E21"
+        ],
+        "contradicting_evidence": [
+          "E6",
+          "E8",
+          "E19"
+        ],
+        "facts": [
+          {
+            "text": "`redis-cache` metrics show `used_memory_pct_of_maxmemory` at 96% at 19:00 and 100% from 19:05 through 19:35; `evicted_keys_per_sec` rose from 0 at 19:00 to 1200 at 19:05 and about 4800\u20135120 keys/s from 19:10 onward; `hit_ratio` fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and about 0.40 thereafter. A `redis-cache` WARN log at 19:05:12 says `maxmemory reached (8gb); evicting keys with allkeys-lru`. Data quality note: metric series returned through 19:35, not 19:40.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "redis-cache is memory-saturated at 100% maxmemory with heavy ongoing evictions (~5k keys/s) and a low hit ratio (~0.40-0.41) throughout the incident window. This indicates degraded cache effectiveness on the catalog path, consistent with increased fall-through pressure to the database.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "From 18:00 through 18:25, redis-cache was steady before the 18:30 feature-flag flip: used_memory_pct_of_maxmemory stayed at 61-62%, evicted_keys_per_sec stayed at 0, hit_ratio stayed at 0.96, and avg_value_size_bytes for keyspace product:pdp:* stayed about 4.1 KB. At 18:30 the same avg_value_size_bytes series ticked up to 4.3 KB and then climbed rapidly after the flip window, indicating the redis value-size change began at the flag-change boundary rather than earlier in the hour.",
+            "evidence_ids": [
+              "E24"
+            ]
+          },
+          {
+            "text": "After 18:30, redis-cache product:pdp:* average value size rose sharply from ~4.3 KB at 18:30 to 12.8 KB at 18:35, 21.5 KB at 18:40, 29.8 KB at 18:45, and ~38.2 KB by 19:00. In the same period, used_memory_pct_of_maxmemory ramped from 63% at 18:30 to 68%, 74%, 80%, 86%, 91%, and then 96% at 19:00. This shows the memory ramp started immediately after the flag flip and was not already underway before 18:30.",
+            "evidence_ids": [
+              "E25"
+            ]
+          },
+          {
+            "text": "Redis did not begin evicting before 19:05: evicted_keys_per_sec remained 0 through 19:00, then jumped to 1200/s at 19:05 and ~4.8-5.1k/s from 19:10 onward as used_memory_pct_of_maxmemory hit 100%. Over that same transition, hit_ratio fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and 0.40 by 19:20. A redis-cache WARN log at 19:05:12 states \"maxmemory reached (8gb); evicting keys with allkeys-lru,\" matching the metric onset of evictions. This supports a post-18:30 progression: value-size growth first, then memory saturation, then evictions and hit-ratio collapse.",
+            "evidence_ids": [
+              "E26"
+            ]
+          },
+          {
+            "text": "Over the same 18:00-19:30 window, redis-cache hit_ratio was stable at 0.96 until 18:25, slipped slightly to 0.95 from 18:30 through 18:55, reached 0.94 at 19:00, then collapsed to 0.71 at 19:05, 0.43 at 19:10, and about 0.40-0.41 from 19:15 through 19:30.",
+            "evidence_ids": [
+              "E28"
+            ]
+          },
+          {
+            "text": "`catalog-svc` logs in the window include a WARN at 19:06:40: `cache miss product:pdp:88123 -> loading from catalog-db (with reviews)`, and an ERROR at 19:10:15: `db pool wait exceeded 2000ms (pool=40, waiting=312)`.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "catalog-svc latency_p99 rose in step with the gateway path, from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms from 19:15 onward.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "Service topology for the affected path is linear: api-gateway depends on catalog-svc, and catalog-svc depends on redis-cache and catalog-db. The blast radius below api-gateway includes catalog-svc, redis-cache, and catalog-db; there are no other downstream dependencies shown on this request path.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "At 18:30Z, catalog-svc had a feature-flag change: 'pdp_cache_include_reviews' moved from 0% to 100%, with details stating that product page cache entries now embed the latest 200 reviews to speed up PDP rendering. This change landed 42 minutes before the gateway latency/504 alert window and is on the product-page path described in the incident.",
+            "evidence_ids": [
+              "E21"
+            ]
+          },
+          {
+            "text": "An error trace from 19:15:20 shows the latency building almost entirely downstream of the gateway: the api-gateway span for GET /products/{id} lasted 5000 ms and failed with \"upstream timeout\"; the child catalog-svc span lasted 4990 ms; within that request, redis-cache GET completed in 1 ms (hit=false) while a catalog-db SELECT product_reviews span took 4600 ms.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "The only returned `catalog-svc` trace sample (`t-c03-slow-1`, start 19:15:20) shows `api-gateway` span `GET /products/{id}` lasting 5000 ms with status `error` and attr `error=upstream timeout`; nested `catalog-svc` span `getProductPage` lasted 4990 ms with status `error`; nested `redis-cache` span `GET product:pdp:77410` lasted 1 ms with status `ok` and `hit=false`; nested `catalog-db` span `SELECT product_reviews` lasted 4600 ms with status `ok`. Data quality note: only 1 trace was returned despite a limit of 50, so trace evidence is sparse.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "An error trace on the product-page path shows api-gateway timing out at 5000 ms with 'upstream timeout'; the catalog-svc span lasts 4990 ms; the redis-cache lookup returns quickly in 1 ms with hit=false; and the catalog-db query consumes 4600 ms. This localizes the latency to the catalog-svc/catalog-db portion of the path and does not indicate a network, DNS, or redis reachability delay in that sampled request.",
+            "evidence_ids": [
+              "E19"
+            ]
+          }
+        ],
+        "assumptions": [
+          "Cache GET latency remained ~1 ms, so the issue is misses, not slowness."
+        ]
+      },
+      {
+        "rank": 4,
+        "hypothesis_id": "H2",
+        "statement": "catalog-svc response latency or errors increased, causing api-gateway to wait on upstream responses until its timeout threshold and return 504s to users.",
+        "status": "supported",
+        "confidence": "high",
+        "supporting_evidence": [
+          "E2",
+          "E3",
+          "E6",
+          "E7",
+          "E8",
+          "E15",
+          "E16",
+          "E19",
+          "E9",
+          "E10",
+          "E11",
+          "E12",
+          "E13",
+          "E14",
+          "E17",
+          "E18",
+          "E21"
+        ],
+        "contradicting_evidence": [],
+        "facts": [
+          {
+            "text": "catalog-svc latency_p99 rose in step with the gateway path, from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms from 19:15 onward.",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "text": "api-gateway logged an upstream timeout against catalog-svc at 19:11:50: \"upstream timed out (110: Connection timed out) while reading response header from upstream, upstream: catalog-svc\".",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "An error trace from 19:15:20 shows the latency building almost entirely downstream of the gateway: the api-gateway span for GET /products/{id} lasted 5000 ms and failed with \"upstream timeout\"; the child catalog-svc span lasted 4990 ms; within that request, redis-cache GET completed in 1 ms (hit=false) while a catalog-db SELECT product_reviews span took 4600 ms.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "`catalog-svc` metric `latency_p99` increased from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms at 19:15; it stayed at 5000 ms through the last returned point at 19:35. Data quality note: the query requested from 19:00 to the incident-window end (tool returned range ending 19:35 while the requested range ended 19:40).",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "The only returned `catalog-svc` trace sample (`t-c03-slow-1`, start 19:15:20) shows `api-gateway` span `GET /products/{id}` lasting 5000 ms with status `error` and attr `error=upstream timeout`; nested `catalog-svc` span `getProductPage` lasted 4990 ms with status `error`; nested `redis-cache` span `GET product:pdp:77410` lasted 1 ms with status `ok` and `hit=false`; nested `catalog-db` span `SELECT product_reviews` lasted 4600 ms with status `ok`. Data quality note: only 1 trace was returned despite a limit of 50, so trace evidence is sparse.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "api-gateway shows sustained p99 latency at 5000 ms and 504 rate around 31-34% from 19:15 through 19:35, while gateway CPU remains normal at 26-27%. This is consistent with time spent waiting on upstreams rather than CPU saturation at the gateway.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "catalog-svc latency_p99 is also pinned at 5000 ms from 19:15 through 19:35, matching the gateway timeout-shaped latency and showing the symptom continues in the downstream service rather than being isolated to api-gateway.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "An error trace on the product-page path shows api-gateway timing out at 5000 ms with 'upstream timeout'; the catalog-svc span lasts 4990 ms; the redis-cache lookup returns quickly in 1 ms with hit=false; and the catalog-db query consumes 4600 ms. This localizes the latency to the catalog-svc/catalog-db portion of the path and does not indicate a network, DNS, or redis reachability delay in that sampled request.",
+            "evidence_ids": [
+              "E19"
+            ]
+          },
+          {
+            "text": "`redis-cache` metrics show `used_memory_pct_of_maxmemory` at 96% at 19:00 and 100% from 19:05 through 19:35; `evicted_keys_per_sec` rose from 0 at 19:00 to 1200 at 19:05 and about 4800\u20135120 keys/s from 19:10 onward; `hit_ratio` fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and about 0.40 thereafter. A `redis-cache` WARN log at 19:05:12 says `maxmemory reached (8gb); evicting keys with allkeys-lru`. Data quality note: metric series returned through 19:35, not 19:40.",
+            "evidence_ids": [
+              "E9"
+            ]
+          },
+          {
+            "text": "`catalog-svc` logs in the window include a WARN at 19:06:40: `cache miss product:pdp:88123 -> loading from catalog-db (with reviews)`, and an ERROR at 19:10:15: `db pool wait exceeded 2000ms (pool=40, waiting=312)`.",
+            "evidence_ids": [
+              "E10"
+            ]
+          },
+          {
+            "text": "`catalog-db` metric `cpu_utilization` rose from 45% at 19:00 to 72% at 19:05, 97% at 19:10, and 98\u201399% from 19:15 through 19:35. A `catalog-db` WARN log at 19:09:02 records `duration: 1840 ms` for statement `SELECT r.* FROM product_reviews r WHERE r.product_id = $1 ORDER BY r.created_at DESC`. Data quality note: metric data ends at 19:35, not 19:40.",
+            "evidence_ids": [
+              "E11"
+            ]
+          },
+          {
+            "text": "Alerts returned in the incident window were `GatewayP99High` firing at 19:12 on `api-gateway`, `CatalogDBCPUHigh` firing at 19:13 on `catalog-db`, and `Gateway5xxHigh` firing at 19:14 on `api-gateway`.",
+            "evidence_ids": [
+              "E12"
+            ]
+          },
+          {
+            "text": "Service topology for the affected path is linear: api-gateway depends on catalog-svc, and catalog-svc depends on redis-cache and catalog-db. The blast radius below api-gateway includes catalog-svc, redis-cache, and catalog-db; there are no other downstream dependencies shown on this request path.",
+            "evidence_ids": [
+              "E13"
+            ]
+          },
+          {
+            "text": "Alerts fired first on api-gateway at 19:12 for high p99 latency, then on catalog-db at 19:13 for CPU >90%, then on api-gateway again at 19:14 for elevated 504s. This places a database health signal inside the failing request path during the incident window.",
+            "evidence_ids": [
+              "E14"
+            ]
+          },
+          {
+            "text": "redis-cache is memory-saturated at 100% maxmemory with heavy ongoing evictions (~5k keys/s) and a low hit ratio (~0.40-0.41) throughout the incident window. This indicates degraded cache effectiveness on the catalog path, consistent with increased fall-through pressure to the database.",
+            "evidence_ids": [
+              "E17"
+            ]
+          },
+          {
+            "text": "catalog-db CPU utilization is sustained at 98-99% from 19:15 through 19:35, and a warning alert for CatalogDBCPUHigh fired at 19:13. This is a direct downstream health issue on the failing path.",
+            "evidence_ids": [
+              "E18"
+            ]
+          },
+          {
+            "text": "At 18:30Z, catalog-svc had a feature-flag change: 'pdp_cache_include_reviews' moved from 0% to 100%, with details stating that product page cache entries now embed the latest 200 reviews to speed up PDP rendering. This change landed 42 minutes before the gateway latency/504 alert window and is on the product-page path described in the incident.",
+            "evidence_ids": [
+              "E21"
+            ]
+          }
+        ],
+        "assumptions": []
+      },
+      {
+        "rank": 5,
+        "hypothesis_id": "H1",
+        "statement": "api-gateway is saturated on a non-CPU bottleneck (for example worker concurrency, connection pool, or socket exhaustion), causing request queueing and upstream timeouts that surface as high p99 latency and 504s.",
+        "status": "refuted",
+        "confidence": "high",
+        "supporting_evidence": [],
+        "contradicting_evidence": [
+          "E1",
+          "E3",
+          "E4",
+          "E6",
+          "E7",
+          "E8",
+          "E15",
+          "E16",
+          "E19"
+        ],
+        "facts": [
+          {
+            "text": "api-gateway latency and 504 symptoms rose sharply before and during the incident: latency_p99 increased from 145 ms at 19:00 to 610 ms at 19:05 and reached 5000 ms by 19:10, while http_504_rate rose from 0% at 19:00 to 1.2% at 19:05, 12.4% at 19:10, and about 31-34% from 19:15 onward. Over the same period, api-gateway CPU stayed roughly flat at 26-30%.",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "text": "api-gateway logged an upstream timeout against catalog-svc at 19:11:50: \"upstream timed out (110: Connection timed out) while reading response header from upstream, upstream: catalog-svc\".",
+            "evidence_ids": [
+              "E3"
+            ]
+          },
+          {
+            "text": "A targeted api-gateway log search for queue/connection/pool/socket/worker terms returned only the upstream-timeout message and did not surface queueing, worker-concurrency, connection-pool, or socket-exhaustion warnings in the returned result set.",
+            "evidence_ids": [
+              "E4"
+            ]
+          },
+          {
+            "text": "An error trace from 19:15:20 shows the latency building almost entirely downstream of the gateway: the api-gateway span for GET /products/{id} lasted 5000 ms and failed with \"upstream timeout\"; the child catalog-svc span lasted 4990 ms; within that request, redis-cache GET completed in 1 ms (hit=false) while a catalog-db SELECT product_reviews span took 4600 ms.",
+            "evidence_ids": [
+              "E6"
+            ]
+          },
+          {
+            "text": "`catalog-svc` metric `latency_p99` increased from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms at 19:15; it stayed at 5000 ms through the last returned point at 19:35. Data quality note: the query requested from 19:00 to the incident-window end (tool returned range ending 19:35 while the requested range ended 19:40).",
+            "evidence_ids": [
+              "E7"
+            ]
+          },
+          {
+            "text": "The only returned `catalog-svc` trace sample (`t-c03-slow-1`, start 19:15:20) shows `api-gateway` span `GET /products/{id}` lasting 5000 ms with status `error` and attr `error=upstream timeout`; nested `catalog-svc` span `getProductPage` lasted 4990 ms with status `error`; nested `redis-cache` span `GET product:pdp:77410` lasted 1 ms with status `ok` and `hit=false`; nested `catalog-db` span `SELECT product_reviews` lasted 4600 ms with status `ok`. Data quality note: only 1 trace was returned despite a limit of 50, so trace evidence is sparse.",
+            "evidence_ids": [
+              "E8"
+            ]
+          },
+          {
+            "text": "api-gateway shows sustained p99 latency at 5000 ms and 504 rate around 31-34% from 19:15 through 19:35, while gateway CPU remains normal at 26-27%. This is consistent with time spent waiting on upstreams rather than CPU saturation at the gateway.",
+            "evidence_ids": [
+              "E15"
+            ]
+          },
+          {
+            "text": "catalog-svc latency_p99 is also pinned at 5000 ms from 19:15 through 19:35, matching the gateway timeout-shaped latency and showing the symptom continues in the downstream service rather than being isolated to api-gateway.",
+            "evidence_ids": [
+              "E16"
+            ]
+          },
+          {
+            "text": "An error trace on the product-page path shows api-gateway timing out at 5000 ms with 'upstream timeout'; the catalog-svc span lasts 4990 ms; the redis-cache lookup returns quickly in 1 ms with hit=false; and the catalog-db query consumes 4600 ms. This localizes the latency to the catalog-svc/catalog-db portion of the path and does not indicate a network, DNS, or redis reachability delay in that sampled request.",
+            "evidence_ids": [
+              "E19"
+            ]
+          }
+        ],
+        "assumptions": []
+      }
+    ],
+    "corrective_actions": [
+      {
+        "rank": 1,
+        "category": "mitigate",
+        "action": "Immediately disable or roll back `pdp_cache_include_reviews` and invalidate/rebuild oversized PDP cache entries so new writes stop inflating Redis and cache effectiveness can recover.",
+        "rationale": "The incident onset lines up directly with the 18:30 flag flip and the subsequent Redis memory ramp, maxmemory evictions, and hit-ratio collapse. Stopping the oversized writes is the fastest way to stop the ongoing cache-thrash \u2192 DB overload cascade.",
+        "evidence_ids": [
+          "E21",
+          "E24",
+          "E25",
+          "E26",
+          "E9",
+          "E17"
+        ]
+      },
+      {
+        "rank": 2,
+        "category": "mitigate",
+        "action": "Temporarily degrade the PDP reviews experience or reduce review payload size/count served on the hot path until cache and DB headroom are restored.",
+        "rationale": "The failing request path is specifically tied to review data: cache-miss logs say requests reload \"with reviews,\" and slow traces localize most latency to `SELECT product_reviews`. Reducing review work lowers immediate DB pressure while recovery proceeds.",
+        "evidence_ids": [
+          "E10",
+          "E6",
+          "E8",
+          "E11",
+          "E19"
+        ]
+      },
+      {
+        "rank": 3,
+        "category": "fix",
+        "action": "Redesign PDP caching so reviews are not embedded as large monolithic blobs in the main product-page cache entry; cache reviews separately or store only a bounded summary with strict size limits.",
+        "rationale": "The specific mechanism was cache-entry bloat from embedding up to 200 reviews, which expanded Redis object size by nearly an order of magnitude and exhausted maxmemory. The durable fix is to remove that coupling and enforce bounded object size.",
+        "evidence_ids": [
+          "E21",
+          "E24",
+          "E25",
+          "E26"
+        ]
+      },
+      {
+        "rank": 4,
+        "category": "prevent",
+        "action": "Add guardrails to feature-flag rollouts affecting cache shape: pre-rollout size estimation, canary percentage rollout, automatic abort on Redis memory growth/evictions, and explicit review by service owners for schema-amplifying cache changes.",
+        "rationale": "This was a non-deploy flag change with major resource impact that progressed over ~35 minutes before user-visible failure. Controlled rollout and resource-based abort criteria would likely have stopped the blast radius before maxmemory and DB saturation.",
+        "evidence_ids": [
+          "E21",
+          "E22",
+          "E24",
+          "E25",
+          "E26",
+          "E27"
+        ]
+      },
+      {
+        "rank": 5,
+        "category": "prevent",
+        "action": "Define and enforce per-key/value size budgets and admission controls for `product:pdp:*` cache entries, rejecting or truncating writes that exceed safe limits.",
+        "rationale": "Redis saturation was driven by sharply larger PDP values. Hard technical limits would prevent a single product-page representation change from consuming the cache tier.",
+        "evidence_ids": [
+          "E24",
+          "E25",
+          "E26",
+          "E9"
+        ]
+      },
+      {
+        "rank": 6,
+        "category": "detect",
+        "action": "Create alerts for Redis memory pressure and cache-quality degradation on the PDP keyspace, including maxmemory proximity, evictions/sec, hit-ratio collapse, and abnormal value-size growth.",
+        "rationale": "Redis began degrading before gateway 504s, but the user-facing alerts fired only after the request path was already failing. Earlier alerts on the cache layer would have provided earlier intervention time.",
+        "evidence_ids": [
+          "E24",
+          "E25",
+          "E26",
+          "E9",
+          "E12"
+        ]
+      },
+      {
+        "rank": 7,
+        "category": "detect",
+        "action": "Add observability for catalog-db request volume and cause-specific saturation signals: SELECTs/sec by statement, lock/wait metrics, storage latency, and catalog-svc cache-miss rate.",
+        "rationale": "The causal chain is strong, but direct DB throughput and lock/wait metrics were missing. These signals would make future incidents faster to confirm and would distinguish miss-driven load from other DB pathologies earlier.",
+        "evidence_ids": [
+          "E29",
+          "E30",
+          "E5",
+          "E10",
+          "E11"
+        ]
+      }
+    ],
+    "missing_data": [
+      "Direct `catalog-db` throughput metrics such as SELECTs/sec or queries/sec by statement, to quantify how much load increase came from cache-miss volume versus slower/heavier queries.",
+      "DB lock/wait, connection, and storage-latency metrics, to rule in or out lock contention versus general CPU saturation as the immediate DB bottleneck.",
+      "More than one representative failing trace and broader log samples, to measure how prevalent the observed `redis miss -> slow product_reviews query -> gateway timeout` path was across all failures.",
+      "Gateway queue-depth, active-connections, and upstream-timeout counters from metrics, to close the remaining observability gap on gateway internals even though current evidence refutes gateway saturation.",
+      "Reliable infra/config snapshots around the window, including autoscaling state, replica counts, and timeout settings, to independently validate that no hidden capacity/config drift contributed."
+    ],
+    "gaps": [
+      "The metrics source for api-gateway exposed only latency_p99, http_504_rate, and cpu_utilization; I could not directly verify request queue depth or active connection counts from metrics.",
+      "I did not find a direct metric for upstream timeout count; evidence for upstream timeouts comes from gateway logs and the trace sample.",
+      "Trace evidence is from a sampled error trace (one returned trace), so it shows a concrete slow path but not its exact prevalence across all failing requests.",
+      "Could not check additional `catalog-svc` golden signals such as request rate, error rate, or label breakdowns (the initial metrics query only exposed aggregate `latency_p99`, and the tool-call allowance was exhausted before follow-up metric queries).",
+      "Could not determine whether `catalog-db` slowdown was specifically due to locks/contention versus general saturation because no lock/wait metrics or infrastructure events were queried in this task.",
+      "Only one `catalog-svc` trace was returned for the window, so dependency timing evidence is based on a sparse trace sample rather than many failing requests.",
+      "I did not find direct network, DNS, or platform-level telemetry in the available sources; absence of such evidence here is not proof those layers are healthy.",
+      "Only one error trace sample was returned for api-gateway, so span-level timing evidence may not represent every failing request.",
+      "catalog-db metrics exposed only CPU utilization in this query; I could not directly verify locks, connection pool saturation, or storage latency from the available metric set.",
+      "get_external_report {'name': 'config snapshots'} failed: not_found: no report named 'config snapshots'; available: []",
+      "The infrastructure-event source returned empty results for both broad and scoped Kubernetes queries, so I could not independently confirm or rule out autoscaling, pod churn, or node-level events in the window.",
+      "The requested external 'config snapshots' report was unavailable ('no report named config snapshots'), so I could not use a second source to validate replica counts, timeout settings, or other config state near the incident.",
+      "Past-incident and runbook searches returned only general CPU-scaling guidance/history and did not provide direct evidence about changes in this incident window.",
+      "I did not query data earlier than 18:00Z, so I can verify the redis behavior did not begin earlier within the 18:00-19:20 window, but not before 18:00Z.",
+      "get_alerts for redis-cache returned no results in 18:00-19:20 (call-0033); I did not use that as strong negative evidence because empty alert results may reflect lack of alert coverage rather than absence of redis issues.",
+      "Could not directly measure catalog-db SELECT throughput (SELECTs/sec) from the available metrics source: over 18:00-19:30 it exposed only cpu_utilization for catalog-db, and explicit requests for selects_per_sec and queries_per_sec returned empty results.",
+      "Because the direct throughput metric was unavailable, I could not distinguish from these sources alone whether catalog-db CPU rose due to a higher query rate after cache-hit collapse (supports H5) or due to heavier/slower queries at similar volume (would weaken H5).",
+      "Full-window log and trace searches for catalog-db/catalog-svc were sparse (single returned entries / single trace), so they are insufficient for reconstructing DB request volume over time."
+    ],
+    "security_findings": [],
+    "questions_for_human": [],
+    "evidence_index": [
+      {
+        "id": "E1",
+        "summary": "api-gateway latency and 504 symptoms rose sharply before and during the incident: latency_p99 increased from 145 ms at 19:00 to 610 ms at 19:05 and reached 5000 ms by 19:10, while http_504_rate rose from 0% at 19:00 to 1.2% at 19:05, 12.4% at 19:10, and about 31-34% from 19:15 onward. Over the same period, api-gateway CPU stayed roughly flat at 26-30%.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0016"
+        ]
+      },
+      {
+        "id": "E2",
+        "summary": "catalog-svc latency_p99 rose in step with the gateway path, from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms from 19:15 onward.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0017"
+        ]
+      },
+      {
+        "id": "E3",
+        "summary": "api-gateway logged an upstream timeout against catalog-svc at 19:11:50: \"upstream timed out (110: Connection timed out) while reading response header from upstream, upstream: catalog-svc\".",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0018"
+        ]
+      },
+      {
+        "id": "E4",
+        "summary": "A targeted api-gateway log search for queue/connection/pool/socket/worker terms returned only the upstream-timeout message and did not surface queueing, worker-concurrency, connection-pool, or socket-exhaustion warnings in the returned result set.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0029"
+        ]
+      },
+      {
+        "id": "E5",
+        "summary": "catalog-svc logs showed database pressure before the alert window: at 19:10:15 it logged \"db pool wait exceeded 2000ms (pool=40, waiting=312)\". The other returned catalog log was a cache miss at 19:06:40 that loaded from catalog-db.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0019",
+          "call-0030"
+        ]
+      },
+      {
+        "id": "E6",
+        "summary": "An error trace from 19:15:20 shows the latency building almost entirely downstream of the gateway: the api-gateway span for GET /products/{id} lasted 5000 ms and failed with \"upstream timeout\"; the child catalog-svc span lasted 4990 ms; within that request, redis-cache GET completed in 1 ms (hit=false) while a catalog-db SELECT product_reviews span took 4600 ms.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0028"
+        ]
+      },
+      {
+        "id": "E7",
+        "summary": "`catalog-svc` metric `latency_p99` increased from 106 ms at 19:00 to 900 ms at 19:05, 4200 ms at 19:10, and 5000 ms at 19:15; it stayed at 5000 ms through the last returned point at 19:35. Data quality note: the query requested from 19:00 to the incident-window end (tool returned range ending 19:35 while the requested range ended 19:40).",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0012"
+        ]
+      },
+      {
+        "id": "E8",
+        "summary": "The only returned `catalog-svc` trace sample (`t-c03-slow-1`, start 19:15:20) shows `api-gateway` span `GET /products/{id}` lasting 5000 ms with status `error` and attr `error=upstream timeout`; nested `catalog-svc` span `getProductPage` lasted 4990 ms with status `error`; nested `redis-cache` span `GET product:pdp:77410` lasted 1 ms with status `ok` and `hit=false`; nested `catalog-db` span `SELECT product_reviews` lasted 4600 ms with status `ok`. Data quality note: only 1 trace was returned despite a limit of 50, so trace evidence is sparse.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0015"
+        ]
+      },
+      {
+        "id": "E9",
+        "summary": "`redis-cache` metrics show `used_memory_pct_of_maxmemory` at 96% at 19:00 and 100% from 19:05 through 19:35; `evicted_keys_per_sec` rose from 0 at 19:00 to 1200 at 19:05 and about 4800\u20135120 keys/s from 19:10 onward; `hit_ratio` fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and about 0.40 thereafter. A `redis-cache` WARN log at 19:05:12 says `maxmemory reached (8gb); evicting keys with allkeys-lru`. Data quality note: metric series returned through 19:35, not 19:40.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0013",
+          "call-0023"
+        ]
+      },
+      {
+        "id": "E10",
+        "summary": "`catalog-svc` logs in the window include a WARN at 19:06:40: `cache miss product:pdp:88123 -> loading from catalog-db (with reviews)`, and an ERROR at 19:10:15: `db pool wait exceeded 2000ms (pool=40, waiting=312)`.",
+        "tools": [
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0021"
+        ]
+      },
+      {
+        "id": "E11",
+        "summary": "`catalog-db` metric `cpu_utilization` rose from 45% at 19:00 to 72% at 19:05, 97% at 19:10, and 98\u201399% from 19:15 through 19:35. A `catalog-db` WARN log at 19:09:02 records `duration: 1840 ms` for statement `SELECT r.* FROM product_reviews r WHERE r.product_id = $1 ORDER BY r.created_at DESC`. Data quality note: metric data ends at 19:35, not 19:40.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0014",
+          "call-0022"
+        ]
+      },
+      {
+        "id": "E12",
+        "summary": "Alerts returned in the incident window were `GatewayP99High` firing at 19:12 on `api-gateway`, `CatalogDBCPUHigh` firing at 19:13 on `catalog-db`, and `Gateway5xxHigh` firing at 19:14 on `api-gateway`.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0024"
+        ]
+      },
+      {
+        "id": "E13",
+        "summary": "Service topology for the affected path is linear: api-gateway depends on catalog-svc, and catalog-svc depends on redis-cache and catalog-db. The blast radius below api-gateway includes catalog-svc, redis-cache, and catalog-db; there are no other downstream dependencies shown on this request path.",
+        "tools": [
+          "get_topology"
+        ],
+        "source_call_ids": [
+          "call-0002"
+        ]
+      },
+      {
+        "id": "E14",
+        "summary": "Alerts fired first on api-gateway at 19:12 for high p99 latency, then on catalog-db at 19:13 for CPU >90%, then on api-gateway again at 19:14 for elevated 504s. This places a database health signal inside the failing request path during the incident window.",
+        "tools": [
+          "get_alerts"
+        ],
+        "source_call_ids": [
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E15",
+        "summary": "api-gateway shows sustained p99 latency at 5000 ms and 504 rate around 31-34% from 19:15 through 19:35, while gateway CPU remains normal at 26-27%. This is consistent with time spent waiting on upstreams rather than CPU saturation at the gateway.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0004"
+        ]
+      },
+      {
+        "id": "E16",
+        "summary": "catalog-svc latency_p99 is also pinned at 5000 ms from 19:15 through 19:35, matching the gateway timeout-shaped latency and showing the symptom continues in the downstream service rather than being isolated to api-gateway.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0005"
+        ]
+      },
+      {
+        "id": "E17",
+        "summary": "redis-cache is memory-saturated at 100% maxmemory with heavy ongoing evictions (~5k keys/s) and a low hit ratio (~0.40-0.41) throughout the incident window. This indicates degraded cache effectiveness on the catalog path, consistent with increased fall-through pressure to the database.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0006"
+        ]
+      },
+      {
+        "id": "E18",
+        "summary": "catalog-db CPU utilization is sustained at 98-99% from 19:15 through 19:35, and a warning alert for CatalogDBCPUHigh fired at 19:13. This is a direct downstream health issue on the failing path.",
+        "tools": [
+          "get_alerts",
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0007",
+          "call-0003"
+        ]
+      },
+      {
+        "id": "E19",
+        "summary": "An error trace on the product-page path shows api-gateway timing out at 5000 ms with 'upstream timeout'; the catalog-svc span lasts 4990 ms; the redis-cache lookup returns quickly in 1 ms with hit=false; and the catalog-db query consumes 4600 ms. This localizes the latency to the catalog-svc/catalog-db portion of the path and does not indicate a network, DNS, or redis reachability delay in that sampled request.",
+        "tools": [
+          "get_traces"
+        ],
+        "source_call_ids": [
+          "call-0020"
+        ]
+      },
+      {
+        "id": "E20",
+        "summary": "In the 17:12Z\u201319:20Z window, the only recorded api-gateway change was a 17:50Z config update to the TLS cipher suite list ('remove CBC ciphers'). The change record does not mention worker concurrency, connection pools, routing, timeouts, or replica/capacity settings.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E21",
+        "summary": "At 18:30Z, catalog-svc had a feature-flag change: 'pdp_cache_include_reviews' moved from 0% to 100%, with details stating that product page cache entries now embed the latest 200 reviews to speed up PDP rendering. This change landed 42 minutes before the gateway latency/504 alert window and is on the product-page path described in the incident.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E22",
+        "summary": "Across the broad change-history query for 17:12Z\u201319:20Z, no deploys, rollbacks, migrations, secret rotations, scheduled jobs, or additional config/feature-flag changes were returned beyond the two events above; specifically, no change records were returned for redis-cache or catalog-db in that window.",
+        "tools": [
+          "get_changes"
+        ],
+        "source_call_ids": [
+          "call-0008"
+        ]
+      },
+      {
+        "id": "E23",
+        "summary": "Infrastructure-event queries returned no Kubernetes events in the incident-adjacent window both globally and when scoped to 'api-gateway' and 'catalog', so this source provided no evidence of autoscaling, rollout, or node/pod infra events around the onset. Because all three infra queries were empty, this should be treated cautiously rather than as definitive proof that no such events occurred.",
+        "tools": [
+          "get_infra_events"
+        ],
+        "source_call_ids": [
+          "call-0009",
+          "call-0025",
+          "call-0026"
+        ]
+      },
+      {
+        "id": "E24",
+        "summary": "From 18:00 through 18:25, redis-cache was steady before the 18:30 feature-flag flip: used_memory_pct_of_maxmemory stayed at 61-62%, evicted_keys_per_sec stayed at 0, hit_ratio stayed at 0.96, and avg_value_size_bytes for keyspace product:pdp:* stayed about 4.1 KB. At 18:30 the same avg_value_size_bytes series ticked up to 4.3 KB and then climbed rapidly after the flip window, indicating the redis value-size change began at the flag-change boundary rather than earlier in the hour.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0031"
+        ]
+      },
+      {
+        "id": "E25",
+        "summary": "After 18:30, redis-cache product:pdp:* average value size rose sharply from ~4.3 KB at 18:30 to 12.8 KB at 18:35, 21.5 KB at 18:40, 29.8 KB at 18:45, and ~38.2 KB by 19:00. In the same period, used_memory_pct_of_maxmemory ramped from 63% at 18:30 to 68%, 74%, 80%, 86%, 91%, and then 96% at 19:00. This shows the memory ramp started immediately after the flag flip and was not already underway before 18:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0031"
+        ]
+      },
+      {
+        "id": "E26",
+        "summary": "Redis did not begin evicting before 19:05: evicted_keys_per_sec remained 0 through 19:00, then jumped to 1200/s at 19:05 and ~4.8-5.1k/s from 19:10 onward as used_memory_pct_of_maxmemory hit 100%. Over that same transition, hit_ratio fell from 0.94 at 19:00 to 0.71 at 19:05, 0.43 at 19:10, and 0.40 by 19:20. A redis-cache WARN log at 19:05:12 states \"maxmemory reached (8gb); evicting keys with allkeys-lru,\" matching the metric onset of evictions. This supports a post-18:30 progression: value-size growth first, then memory saturation, then evictions and hit-ratio collapse.",
+        "tools": [
+          "query_metrics",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0031",
+          "call-0032"
+        ]
+      },
+      {
+        "id": "E27",
+        "summary": "In the 18:00-19:30 window, catalog-db cpu_utilization was steady at 37-44% from 18:00 through 18:55, 45% at 19:00, then rose sharply to 72% at 19:05 and 97-99% from 19:10 through 19:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0034"
+        ]
+      },
+      {
+        "id": "E28",
+        "summary": "Over the same 18:00-19:30 window, redis-cache hit_ratio was stable at 0.96 until 18:25, slipped slightly to 0.95 from 18:30 through 18:55, reached 0.94 at 19:00, then collapsed to 0.71 at 19:05, 0.43 at 19:10, and about 0.40-0.41 from 19:15 through 19:30.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0035"
+        ]
+      },
+      {
+        "id": "E29",
+        "summary": "I could not obtain a direct catalog-db throughput metric for SELECTs/sec in this datasource: the broad catalog-db metrics query over 18:00-19:30 exposed only cpu_utilization, and explicit metric queries for selects_per_sec and queries_per_sec returned no results. Therefore these sources do not directly show whether DB CPU rose because query volume increased versus queries becoming heavier.",
+        "tools": [
+          "query_metrics"
+        ],
+        "source_call_ids": [
+          "call-0034",
+          "call-0039",
+          "call-0040"
+        ]
+      },
+      {
+        "id": "E30",
+        "summary": "Additional full-window searches were sparse rather than volumetric: catalog-db log search for SELECT/statement/duration returned one slow-query WARN at 19:09:02, catalog-svc log search for cache-miss/loading-from-catalog-db returned one cache-miss WARN at 19:06:40, and a catalog-db trace query returned the same single 19:15:20 slow request already seen elsewhere. These sources do not provide enough samples to estimate DB query throughput.",
+        "tools": [
+          "get_traces",
+          "search_logs"
+        ],
+        "source_call_ids": [
+          "call-0036",
+          "call-0037",
+          "call-0038"
+        ]
+      }
+    ],
+    "stop_reason": "accepted"
+  },
+  "stop_reason": "accepted",
+  "usage": {
+    "llm_calls": 24,
+    "input_tokens": 138601,
+    "output_tokens": 31206,
+    "cache_read_tokens": 52224,
+    "cache_write_tokens": 0,
+    "reasoning_tokens": 18515,
+    "cost_usd": 0.616023,
+    "unpriced_calls": 0,
+    "tool_calls": 40,
+    "latency_ms": 387395.26
+  },
+  "by_agent": {
+    "triage": {
+      "llm_calls": 1,
+      "input_tokens": 785,
+      "output_tokens": 1420,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 733,
+      "cost_usd": 0.023262,
+      "unpriced_calls": 0,
+      "tool_calls": 1,
+      "latency_ms": 17725.78
+    },
+    "observability": {
+      "llm_calls": 12,
+      "input_tokens": 86106,
+      "output_tokens": 12331,
+      "cache_read_tokens": 46592,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 7153,
+      "cost_usd": 0.295397,
+      "unpriced_calls": 0,
+      "tool_calls": 25,
+      "latency_ms": 156138.76
+    },
+    "dependency": {
+      "llm_calls": 3,
+      "input_tokens": 12791,
+      "output_tokens": 1790,
+      "cache_read_tokens": 1536,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 403,
+      "cost_usd": 0.055373,
+      "unpriced_calls": 0,
+      "tool_calls": 7,
+      "latency_ms": 26320.41
+    },
+    "change_history": {
+      "llm_calls": 3,
+      "input_tokens": 9633,
+      "output_tokens": 3676,
+      "cache_read_tokens": 4096,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 2625,
+      "cost_usd": 0.070006,
+      "unpriced_calls": 0,
+      "tool_calls": 7,
+      "latency_ms": 47566.23
+    },
+    "reasoning": {
+      "llm_calls": 2,
+      "input_tokens": 11269,
+      "output_tokens": 6026,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3584,
+      "cost_usd": 0.070746,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 64020.91
+    },
+    "critic": {
+      "llm_calls": 2,
+      "input_tokens": 11812,
+      "output_tokens": 3906,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 3392,
+      "cost_usd": 0.054872,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 47260.46
+    },
+    "reporter": {
+      "llm_calls": 1,
+      "input_tokens": 6205,
+      "output_tokens": 2057,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 625,
+      "cost_usd": 0.046367,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 28362.71
+    }
+  },
+  "by_model": {
+    "gpt-5.4-2026-03-05": {
+      "llm_calls": 20,
+      "input_tokens": 115520,
+      "output_tokens": 21274,
+      "cache_read_tokens": 52224,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 11539,
+      "cost_usd": 0.490405,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 276113.89
+    },
+    "o3-2025-04-16": {
+      "llm_calls": 4,
+      "input_tokens": 23081,
+      "output_tokens": 9932,
+      "cache_read_tokens": 0,
+      "cache_write_tokens": 0,
+      "reasoning_tokens": 6976,
+      "cost_usd": 0.125618,
+      "unpriced_calls": 0,
+      "tool_calls": 0,
+      "latency_ms": 111281.37
+    }
+  },
+  "tool_calls": 40,
+  "latency_s": 253.362,
+  "errors": [],
+  "calls": [
+    {
+      "call_id": "call-0001",
+      "tool": "get_topology",
+      "args": {},
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0002",
+      "tool": "get_topology",
+      "args": {
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0003",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-02T19:12:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0004",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:12:00Z",
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0005",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:12:00Z",
+        "service": "catalog-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0006",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:12:00Z",
+        "service": "redis-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0007",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:12:00Z",
+        "service": "catalog-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0008",
+      "tool": "get_changes",
+      "args": {
+        "start": "2026-09-02T17:12:00Z",
+        "end": "2026-09-02T19:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0009",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-02T17:12:00Z",
+        "end": "2026-09-02T19:20:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0010",
+      "tool": "search_past_incidents",
+      "args": {
+        "query": "api gateway 504 latency catalog redis db timeout connection pool autoscaling"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0011",
+      "tool": "search_runbooks",
+      "args": {
+        "query": "api gateway autoscaling timeout connection pool catalog redis db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0012",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0013",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "redis-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0014",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0015",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-svc",
+        "limit": 50
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0016",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "api-gateway"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0017",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-svc"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0018",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "api-gateway",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0019",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-svc",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0020",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-02T19:12:00Z",
+        "service": "api-gateway",
+        "status": "error",
+        "limit": 10
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0021",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-svc",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0022",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "catalog-db",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0023",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "redis-cache",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0024",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-02T19:00:00Z"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0025",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-02T17:12:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "entity": "api-gateway",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0026",
+      "tool": "get_infra_events",
+      "args": {
+        "start": "2026-09-02T17:12:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "entity": "catalog",
+        "source": "kubernetes"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0027",
+      "tool": "get_external_report",
+      "args": {
+        "name": "config snapshots"
+      },
+      "ok": false,
+      "error": "not_found",
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0028",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "service": "api-gateway",
+        "status": "error",
+        "limit": 20
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0029",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "query": "queue|connection|pool|socket|worker",
+        "service": "api-gateway",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0030",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T19:00:00Z",
+        "query": "redis|cache|db|pool|lock|timeout",
+        "service": "catalog-svc",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0031",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "service": "redis-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0032",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "service": "redis-cache",
+        "level": "WARN",
+        "limit": 100
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0033",
+      "tool": "get_alerts",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:20:00Z",
+        "service": "redis-cache"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0034",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "service": "catalog-db"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0035",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "service": "redis-cache",
+        "name": "hit_ratio"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0036",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "query": "SELECT|statement|duration",
+        "service": "catalog-db",
+        "level": "INFO",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0037",
+      "tool": "search_logs",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "query": "cache miss|loading from catalog-db",
+        "service": "catalog-svc",
+        "level": "INFO",
+        "limit": 500
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0038",
+      "tool": "get_traces",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "service": "catalog-db",
+        "limit": 200
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0039",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "service": "catalog-db",
+        "name": "selects_per_sec"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    },
+    {
+      "call_id": "call-0040",
+      "tool": "query_metrics",
+      "args": {
+        "start": "2026-09-02T18:00:00Z",
+        "end": "2026-09-02T19:30:00Z",
+        "service": "catalog-db",
+        "name": "queries_per_sec"
+      },
+      "ok": true,
+      "error": null,
+      "attempts": 1
+    }
+  ]
+}

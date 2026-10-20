@@ -1,0 +1,13 @@
+{
+  "model": "openai:gpt-5.4-mini",
+  "version": 3,
+  "cost_usd": 0.013262,
+  "verdict": {
+    "root_cause": "correct",
+    "root_cause_reason": "The report identifies the expired payments-svc mTLS certificate as the direct failure, and traces that back to cert-manager renewal failures caused by the 2026-07-28 ClusterRole tightening (PR #2231) removing issuer read access. That matches the key\u2019s originating change, component, and mechanism.",
+    "red_herrings_adopted": [],
+    "must_not_violated": [],
+    "factors_stated": [],
+    "unsupported_claims": []
+  }
+}
