@@ -40,3 +40,5 @@ fixes:
 - Scorer: save tool results with each run, so key evidence counts only when the returned data actually contains it. 
 - critic: it must ask for more evidence instead of accepting.
 - Change&history agent: The orchestrator makes the first change-history query in each investigation unfiltered (all services), so no model can skip it. 
+
+- Coarse sampling read as truncated data: the gatherer prompt should tell agents to compare the sampling step before calling a series truncated.
