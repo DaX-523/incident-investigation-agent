@@ -30,12 +30,15 @@ ground_truth:
       service: kafka
     description: lag only on partitions 7 and 2, onsets 13:17 / 13:52
   - id: ev_restarts
+    must_contain: ["orders-worker-7", "orders-worker-2"]
     tool: get_infra_events
     description: orders-worker-7 and -2 crash-looping from the same times
   - id: ev_changes
+    must_contain: ["v4.1.0"]
     tool: get_changes
     description: checkout-svc v4.1.0 deploy at 13:05 precedes the first stall by 12 minutes (correlation only)
   - id: ev_log_attempt
+    attempt_only: true
     tool: search_logs
     description: Agent attempts log search (fails); should report it and continue
     required: true

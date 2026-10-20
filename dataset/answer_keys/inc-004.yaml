@@ -32,11 +32,13 @@ ground_truth:
       service: auth-svc
     description: active connections pinned at 5, pending threads ~150
   - id: ev_logs
+    must_contain: ["maximumPoolSize=5", "Connection is not available"]
     tool: search_logs
     args:
       service: auth-svc
     description: Hikari timeout logs and startup with maximumPoolSize=5
   - id: ev_changes
+    must_contain: ["AUTH_DB_POOL_MAX=5"]
     tool: get_changes
     description: 'PR #874 changed AUTH_DB_POOL_MAX 50 -> 5 at 11:40'
   - id: ev_network

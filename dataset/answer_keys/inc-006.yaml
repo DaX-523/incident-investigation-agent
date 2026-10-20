@@ -26,6 +26,7 @@ ground_truth:
     disproved_by: [ev_k8s_events, ev_clock_offset, ev_memory]
   key_evidence:
   - id: ev_k8s_events
+    must_contain: ["OOMKilled"]
     tool: get_infra_events
     description: OOMKilled at 10:02:08 by control-plane clock
   - id: ev_clock_offset
@@ -39,6 +40,7 @@ ground_truth:
       service: fraud-svc
     description: memory climbing since 09:30 toward 2048Mi
   - id: ev_changes
+    must_contain: ["fraud-gbm v6 -> v7"]
     tool: get_changes
     description: model v7 hot-reload at 09:30, 1.9GB vs 0.8GB
   - id: ev_logs

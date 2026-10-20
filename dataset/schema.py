@@ -248,6 +248,11 @@ class KeyEvidence(Strict):
     args: dict[str, Any] = {}
     description: str
     required: bool = True
+    # Case-insensitive strings the call's returned data must all contain, so a filtered query that
+    # could not return this evidence doesn't count. Each must occur in the scenario environment.
+    must_contain: list[str] = []
+    # The evidence is the attempt itself (e.g. trying a source that fails); a failed call counts.
+    attempt_only: bool = False
 
 
 class CorrectiveAction(Strict):

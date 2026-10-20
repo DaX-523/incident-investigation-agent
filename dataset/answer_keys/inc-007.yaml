@@ -33,11 +33,13 @@ ground_truth:
     disproved_by: [ev_success_metrics]
   key_evidence:
   - id: ev_logs
+    must_contain: ["invalid_api_key", "pk_live_..C2"]
     tool: search_logs
     args:
       service: payments-svc
     description: 401 invalid_api_key with old key id; new pod loaded new key and succeeds
   - id: ev_changes
+    must_contain: ["revoke_previous_immediately=true", "pk_live_..A7 revoked"]
     tool: get_changes
     description: rotation at 06:58 with immediate revoke; revoke config changed 05-25
   - id: ev_success_metrics

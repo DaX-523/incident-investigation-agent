@@ -73,6 +73,8 @@ def result_to_dict(result: RunResult) -> dict[str, Any]:
         "tool_calls": result.tool_calls,
         "latency_s": result.latency_s,
         "errors": result.state.get("errors", []),
+        # Returned data is kept so scoring can check what a call actually retrieved.
         "calls": [{"call_id": c.call_id, "tool": c.tool, "args": c.args, "ok": c.ok,
-                   "error": c.error.kind if c.error else None, "attempts": c.attempts} for c in result.calls],
+                   "error": c.error.kind if c.error else None, "attempts": c.attempts, "data": c.data}
+                  for c in result.calls],
     }

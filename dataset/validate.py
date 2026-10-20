@@ -5,6 +5,7 @@ Usage: uv run python -m dataset.validate
 
 from __future__ import annotations
 
+import json
 import sys
 from collections import Counter
 from datetime import timedelta
@@ -114,6 +115,12 @@ def check_answer_key(s: Scenario, k: AnswerKey) -> list[str]:
     ranks = sorted(a.rank for a in gt.corrective_actions)
     if ranks != list(range(1, len(ranks) + 1)):
         errs.append(f"corrective action ranks not 1..n: {ranks}")
+
+    env_text = json.dumps(s.environment.model_dump(mode="json"), ensure_ascii=False).lower()
+    for e in gt.key_evidence:
+        for needle in e.must_contain:
+            if needle.lower() not in env_text:
+                errs.append(f"evidence {e.id}: must_contain {needle!r} not found in the scenario environment")
 
     report_names = {r.name for r in s.environment.external_reports}
     for e in gt.key_evidence:

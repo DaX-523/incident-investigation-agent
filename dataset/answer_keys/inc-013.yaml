@@ -36,7 +36,7 @@ ground_truth:
       why_wrong: Retries are added on top of new dispatch; the 1-minute series shows ~1290 attempts/min (21.5/sec) on wave minutes.
       disproved_by: [ev_waves, ev_logs]
   key_evidence:
-    - {id: ev_logs, tool: search_logs, args: {service: dialer}, description: "429 -> fixed 120s retry; attempts 1..4 burned; UNREACHABLE"}
+    - {id: ev_logs, tool: search_logs, args: {service: dialer}, description: "429 -> fixed 120s retry; attempts 1..4 burned; UNREACHABLE", must_contain: ["429 Too Many Requests", "retry in 120s"]}
     - {id: ev_active_calls, tool: query_metrics, args: {service: dialer, name: active_calls}, description: "concurrency ~20-24, far below 80"}
     - {id: ev_cdr, tool: get_external_report, args: {name: carrier_cdr_summary_2026-03-10}, description: "CDR peak 24 of 80 channels"}
     - {id: ev_support, tool: get_external_report, args: {name: carrier_support_reply}, description: "carrier cites the 15 attempts/sec limit", required: false}

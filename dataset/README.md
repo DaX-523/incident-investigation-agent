@@ -7,6 +7,8 @@
 | `scenarios/inc-NNN.yaml` | tool harness (agent sees the report, plus tool results only) | `incident_report`, `environment` (topology, metrics, logs, traces, changes, infra events, alerts, runbooks, external reports, past incidents), `tool_faults` |
 | `answer_keys/inc-NNN.yaml` | evaluators only | `metadata` (title, tags, provenance) and `ground_truth` (root cause and aliases, contributing factors, propagation chain, red herrings, key evidence, expected outcome and confidence, ranked corrective actions, `must_not`) |
 
+`key_evidence[].must_contain` lists strings the returned tool data must hold for a call to count as retrieving that evidence, so a filtered query that could not return it doesn't count. `attempt_only` marks evidence that is the attempt itself (trying a source that fails). The validator checks every `must_contain` string occurs in the scenario, and a test checks the key's own arguments can return it.
+
 Scenario ids are neutral (`inc-NNN`) so ids and filenames don't hint at the answer. `tool_faults` are applied by the tool harness and never returned to the agent. The answer-key format follows the four-layer ground truth in Alibaba's RCA Benchmark: fault type, entity, propagation chain, and evidence. `key_evidence[].tool` and `args` map to agentevals' superset trajectory match.
 
 ## Tools the environment backs

@@ -30,6 +30,7 @@ ground_truth:
     disproved_by: [ev_redis_metrics]
   key_evidence:
   - id: ev_traces
+    must_contain: ["t-c03-slow-1"]
     tool: get_traces
     description: slow traces show cache miss then 4.6s catalog-db query
   - id: ev_redis_metrics
@@ -38,6 +39,7 @@ ground_truth:
       service: redis-cache
     description: memory at 100%, evictions spike, hit ratio collapse at 19:05
   - id: ev_changes
+    must_contain: ["pdp_cache_include_reviews"]
     tool: get_changes
     description: pdp_cache_include_reviews enabled at 18:30
   - id: ev_gateway_cpu

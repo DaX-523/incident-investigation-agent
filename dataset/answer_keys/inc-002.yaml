@@ -27,6 +27,7 @@ ground_truth:
     disproved_by: [ev_logs]
   key_evidence:
   - id: ev_logs
+    must_contain: ["x509: certificate has expired"]
     tool: search_logs
     args:
       service: checkout-svc
@@ -37,6 +38,7 @@ ground_truth:
       service: checkout-svc
     description: Error rate identical for v3.8.0 and v3.8.1
   - id: ev_rollback
+    must_contain: ["v3.8.1 -> v3.8.0"]
     tool: get_changes
     description: Rollback at 09:22 with no recovery
   - id: ev_changes
@@ -44,6 +46,7 @@ ground_truth:
     description: Deploy diff only touched an email template; RBAC change on 07-28
     required: false
   - id: ev_cert_events
+    must_contain: ["IssuingFailed", "forbidden"]
     tool: get_infra_events
     description: cert-manager IssuingFailed since 07-31 with RBAC forbidden error
   expected_confidence: high

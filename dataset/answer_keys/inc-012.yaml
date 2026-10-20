@@ -47,6 +47,7 @@ ground_truth:
       service: web-analytics
     description: human visitors flat - conflicts with nginx counts
   - id: ev_logs
+    must_contain: ["Bytespider", "/static/js/"]
     tool: search_logs
     args:
       service: nginx-edge

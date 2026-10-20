@@ -36,9 +36,11 @@ ground_truth:
     disproved_by: [ev_traces, ev_deals_metrics, ev_cache_failover]
   key_evidence:
   - id: ev_traces
+    must_contain: ["deadline_exceeded"]
     tool: get_traces
     description: slow requests spend ~2.4s in pricing-svc getQuotes (cache miss); ranking stays ~35ms on v4.2.0
   - id: ev_cache_failover
+    must_contain: ["FailoverComplete", "ReplicaFullResync"]
     tool: get_infra_events
     description: pricing-cache failover at 13:18 to a replica mid full-resync (0.4M of 9.8M keys)
   - id: ev_pricing_metrics

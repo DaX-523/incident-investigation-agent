@@ -30,9 +30,11 @@ ground_truth:
       service: search-svc
     description: Agent must notice returned timestamps end at 12:50 and not trust them
   - id: ev_es_events
+    must_contain: ["InstanceStatusCheckFailed", "HealthRed"]
     tool: get_infra_events
     description: es-data-3 status check failed 15:17; cluster RED with unassigned primaries
   - id: ev_logs
+    must_contain: ["2 of 10 shards failed"]
     tool: search_logs
     args:
       service: search-svc
@@ -44,6 +46,7 @@ ground_truth:
     description: data nodes 3 -> 2, unassigned shards 2
     required: false
   - id: ev_changes
+    must_contain: ["number_of_replicas=0", "Relabel config cleanup"]
     tool: get_changes
     description: replicas=0 since 09-16; prometheus relabel 12:55
   - id: ev_frontend_metrics

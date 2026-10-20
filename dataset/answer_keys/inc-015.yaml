@@ -39,9 +39,11 @@ ground_truth:
     disproved_by: [ev_payments_metrics]
   key_evidence:
   - id: ev_traces
+    must_contain: ["connect_timeout"]
     tool: get_traces
     description: failing requests time out in dns.lookup (2000ms) with no payments-svc span
   - id: ev_dns_events
+    must_contain: ["Evicted", "FailedScheduling"]
     tool: get_infra_events
     description: node drain at 02:05 evicts two CoreDNS pods; replacements Pending (insufficient cpu)
   - id: ev_coredns_metrics

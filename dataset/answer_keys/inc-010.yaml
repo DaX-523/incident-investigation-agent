@@ -29,9 +29,11 @@ ground_truth:
     disproved_by: [ev_db]
   key_evidence:
   - id: ev_hpa
+    must_contain: ["ScalingLimited", "OOMKilled"]
     tool: get_infra_events
     description: HPA ScalingLimited desired 34 > max 12; prometheus OOM gap
   - id: ev_changes
+    must_contain: ["maxReplicas 40 -> 12", "Diwali flash sale"]
     tool: get_changes
     description: maxReplicas 40 -> 12 on 09-29; push campaign at 20:00
   - id: ev_alb

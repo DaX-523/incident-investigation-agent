@@ -23,6 +23,7 @@ ground_truth:
     disproved_by: [ev_traffic, ev_db_locks]
   key_evidence:
   - id: ev_changes
+    must_contain: ["0047_users_bio_to_text"]
     tool: get_changes
     description: migration 0047 at 16:00
   - id: ev_db_locks
@@ -31,6 +32,7 @@ ground_truth:
       service: users-db
     description: lock waits 16:00-16:22 match the 5xx window
   - id: ev_logs
+    must_contain: ["lock timeout"]
     tool: search_logs
     args:
       service: user-svc

@@ -27,6 +27,7 @@ ground_truth:
     disproved_by: [ev_payments_metrics, ev_traces]
   key_evidence:
   - id: ev_changes
+    must_contain: ["v2.14.0"]
     tool: get_changes
     description: checkout-svc v2.14.0 deploy at 14:01 aligns with onset at 14:05
   - id: ev_error_metric
@@ -35,11 +36,13 @@ ground_truth:
       service: checkout-svc
     description: 5xx jumps from 0.3% to ~22% at 14:05
   - id: ev_logs
+    must_contain: ["TypeError", "cart_schema=v1"]
     tool: search_logs
     args:
       service: checkout-svc
     description: TypeError in formatPrice only for cart_schema=v1
   - id: ev_traces
+    must_contain: ["t-c01-fail-1"]
     tool: get_traces
     description: failing traces end in checkout-svc pricing.formatPrice
   - id: ev_payments_metrics

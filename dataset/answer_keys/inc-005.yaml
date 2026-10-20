@@ -38,6 +38,7 @@ ground_truth:
       service: node-ip-10-0-3-17
     description: disk io await ~190ms
   - id: ev_traces
+    must_contain: ["ip-10-0-3-17"]
     tool: get_traces
     description: slow spans all on pods scheduled to ip-10-0-3-17
   - id: ev_aws_health

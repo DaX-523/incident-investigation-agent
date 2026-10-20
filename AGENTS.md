@@ -105,9 +105,12 @@ investigator/
   tools/toolbox.py   per-task tool allowance; records tool calls on the worker's behalf
   systems.py         build + run either system on one scenario (shared by the CLI and evals)
 evals/
-  scoring.py         deterministic scoring of a saved run against its answer key (no LLM)
+  scoring.py         scoring of a saved run against its answer key: deterministic checks (key evidence against the
+                     data each call returned), lexical root-cause match, optional LLM judgement
+  judge.py           LLM grader (JUDGE_MODEL): root cause as cause vs amplifier, red herrings, must-not, factors
   compare.py         multi-agent vs baseline sweep: saves runs, resumes, rescores, writes results.md/json
-  results/<dir>/     runs/*.json, results.json, results.md, optional reviews.yaml (manual review decisions)
+  results/<dir>/     runs/*.json, judgements/*.json (cached judge verdicts), results.json, results.md,
+                     optional reviews.yaml (manual review decisions)
 tests/               pytest suite
 ```
 
@@ -131,7 +134,7 @@ uv run langgraph dev                         # LangGraph Studio: https://smith.l
 uv run python -m evals.compare --stub          # offline comparison dry run
 uv run python -m evals.compare --preset budget --parallel 3   # live: all scenarios x both systems (costs money)
 uv run python -m evals.compare --provider openai --scenarios inc-003 inc-008   # subset on OpenAI
-uv run python -m evals.compare --rescore evals/results/<dir> # re-score saved runs, no model calls
+uv run python -m evals.compare --rescore evals/results/<dir> # re-score saved runs (cached judge; --judge none = no model calls)
 ```
 
 The Studio entry point is `investigator/studio.py`. Its run context is `{scenario, mode: stub|llm, preset, provider, investigation_mode}`.

@@ -39,9 +39,11 @@ ground_truth:
       service: tracking-db
     description: query p99 9ms -> ~950ms, write IOPS ~9900/10000, lock waits from 08:50
   - id: ev_traces
+    must_contain: ["Lock:tuple", "backfill.batch"]
     tool: get_traces
     description: slow SELECTs (~940ms, Lock:tuple) and backfill batches writing 5000 rows in ~4s
   - id: ev_job_events
+    must_contain: ["backfill-carrier-events", "WriteIOPSHigh"]
     tool: get_infra_events
     description: backfill job created at 08:49:50 with parallelism 16; RDS write IOPS alert at 08:58
   - id: ev_pool_change
