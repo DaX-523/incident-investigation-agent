@@ -126,6 +126,12 @@ List concrete issues: unsupported claims, ignored contradicting evidence, stale 
 treated as fact, causation inferred from timing alone, untested alternatives, and a top hypothesis
 that is a category ("a deploy or config change to A, B or C") instead of a specific mechanism.
 
+Do not accept while one of your own issues undermines the top hypothesis's causal chain: the effect
+appears before the proposed cause, the proposed cause cannot produce the observed size of the effect,
+or a significant observation is left unexplained or treated as a mere symptom without asking what
+started it. Request the evidence that would settle it (need_more_evidence) while rounds remain; with
+none left, say so in `issues` and choose inconclusive if the doubt is unresolved.
+
 {UNTRUSTED_DATA}"""
 
 REPORTER = f"""\

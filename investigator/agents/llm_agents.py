@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -227,6 +228,13 @@ class LLMGatherer:
 
     def __call__(self, task: Task, ctx: WorkerContext, toolbox: ToolBox) -> Outcome:
         messages: list[BaseMessage] = [SystemMessage(prompts.gatherer_prompt(self.agent)), HumanMessage(self._brief(task, ctx))]
+        if self.agent == "change_history" and not _has_change_sweep(ctx.tool_calls) and toolbox.remaining > 0:
+            # Fixed first step, not left to the model: a service-filtered change query can miss the change
+            # that matters (it is often in a neighbouring service), so one unfiltered sweep always runs.
+            sweep = toolbox.call("get_changes", _sweep_args(ctx))
+            messages.append(HumanMessage(
+                f"Before you start, an unfiltered change-history sweep (all services, from {CHANGE_SWEEP_DAYS} days "
+                f"before the incident) was run for this task; cite it as {sweep.call_id}:\n{render_tool_result(sweep)}"))
         usage = Usage()
         findings: GathererFindings | None = None
         reminders = 0
@@ -264,6 +272,26 @@ class LLMGatherer:
         status = "ok" if not findings.gaps else "partial"
         return Outcome(task_id=task.task_id, agent=task.agent, status=status,
                        evidence=findings.evidence, gaps=findings.gaps, usage=usage)
+
+
+CHANGE_SWEEP_DAYS = 14
+
+
+def _has_change_sweep(calls: list[ToolCallRecord]) -> bool:
+    return any(c.tool == "get_changes" and c.ok and not c.args.get("service") and not c.args.get("kind") for c in calls)
+
+
+def _sweep_args(ctx: WorkerContext) -> dict[str, str]:
+    anchor = ctx.triage.window_start if ctx.triage and ctx.triage.window_start else ctx.incident.get("reported_at")
+    if isinstance(anchor, str):
+        try:
+            anchor = datetime.fromisoformat(anchor.replace("Z", "+00:00"))
+        except ValueError:
+            anchor = None
+    if not isinstance(anchor, datetime):
+        return {}  # unbounded history
+    start = anchor - timedelta(days=CHANGE_SWEEP_DAYS)
+    return {"start": start.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")}
 
 
 def _analysis_brief(ctx: WorkerContext) -> str:

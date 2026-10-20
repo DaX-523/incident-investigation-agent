@@ -228,6 +228,39 @@ def test_critic_is_told_when_no_human_can_answer(human_available):
     assert ("never choose needs_human" in seen[0]) is not human_available
 
 
+def change_gatherer(script, tool_calls=(), allowance=4):
+    spec = load_model_config(env={})["change_history"]
+    model = FakeModel(script=script)
+    g = LLMGatherer("change_history", _Caller("change_history", spec, model, UsageLedger()))
+    toolbox = ToolBox(ToolHarness(load_scenario("inc-001"), settings=NO_SLEEP), allowance)
+    task = Task(task_id="T3", agent="change_history", goal="recent changes to checkout-svc", services=["checkout-svc"])
+    ctx = WorkerContext(incident={"title": "x", "reported_at": "2026-09-14T14:30:00Z"}, tool_call_allowance=allowance,
+                        tool_calls=list(tool_calls))
+    return g, task, ctx, toolbox, model
+
+
+def test_change_history_always_starts_with_an_unfiltered_sweep():
+    g, task, ctx, toolbox, model = change_gatherer(lambda m: ai(tool_calls=[submit(["call-0001"])]))
+    outcome = g(task, ctx, toolbox)
+    first = toolbox.records()[0]
+    assert first.tool == "get_changes" and first.args == {"start": "2026-08-31T14:30:00Z"}  # 14 days before
+    assert "cite it as call-0001" in str(model.calls[0][-1].content)
+    assert outcome.evidence[0].source_call_ids == ["call-0001"]  # citable like any own call
+
+
+def test_change_sweep_is_skipped_when_the_team_already_ran_one():
+    done = ToolCallRecord(call_id="c9", tool="get_changes", args={"start": "2026-09-01T00:00:00Z"}, ok=True)
+    filtered = ToolCallRecord(call_id="c8", tool="get_changes", args={"service": "checkout-svc"}, ok=True)
+    g, task, ctx, toolbox, _ = change_gatherer(lambda m: ai(tool_calls=[{"name": "get_infra_events", "args": {}}]) if not
+                                               last_call_ids(m) else ai(tool_calls=[submit(last_call_ids(m))]),
+                                               tool_calls=[done])
+    g(task, ctx, toolbox)
+    assert [r.tool for r in toolbox.records()] == ["get_infra_events"]
+    g, task, ctx, toolbox, _ = change_gatherer(lambda m: ai(tool_calls=[submit(["call-0001"])]), tool_calls=[filtered])
+    g(task, ctx, toolbox)
+    assert toolbox.records()[0].tool == "get_changes"  # a service-filtered query is not a sweep
+
+
 def test_large_tool_results_are_truncated_with_a_visible_marker():
     harness = ToolHarness(load_scenario("inc-013"), settings=NO_SLEEP)
     result = harness.call("query_metrics", {"service": "dialer"})
