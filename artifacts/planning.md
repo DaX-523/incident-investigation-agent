@@ -28,3 +28,15 @@ Architecture review decisions
 - SINGLE AGENT VS MULTI AGENT COMPARISON
 
 - EVALUATOR (optional): offline evals/ harness (LangSmith + agentevals), not a graph node; compared against single-agent baseline with same tools.
+
+
+after multiple iterations of testing i found out some bugs to fix within
+
+- the comparison fucntion on the big note, it does not catch key important info that the agent do not fetch
+- Critic agent: if one of its own issues contradicts the top hypothesis's causal order (the effect appears before the proposed cause).
+- Change-history agent: gpt-5.4 ignored the "start broad" instruction. 
+
+fixes: 
+- Scorer: save tool results with each run, so key evidence counts only when the returned data actually contains it. 
+- critic: it must ask for more evidence instead of accepting.
+- Change&history agent: The orchestrator makes the first change-history query in each investigation unfiltered (all services), so no model can skip it. 
